@@ -118,6 +118,13 @@ namespace System.PrivateUri.Tests
         }
 
         [Fact]
+        public void UriIsWellFormed_MixedPercent()
+        {
+            Assert.True(Uri.IsWellFormedUriString("https://base.com/%C3%A5%2A"));
+            Assert.True(Uri.IsWellFormedUriString("https://base.com/%E0%B8%95%E0%B8%B1%2A"));
+        }
+
+        [Fact]
         public void UriMakeRelative_ImplicitFileCommonBaseWithColon_AppendsDotSlash()
         {
             Uri baseUri = new Uri(@"c:/base/path/stuff");
