@@ -77,11 +77,11 @@ namespace System.Net.WebSockets.Tests
                 DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
-            await websocket.SendAsync(Encoding.UTF8.GetBytes("Hello"), WebSocketMessageType.Text, true, CancellationToken);
+            await websocket.SendAsync("Hello"u8.ToArray(), WebSocketMessageType.Text, true, CancellationToken);
             Assert.Equal("C107F248CDC9C90700", Convert.ToHexString(stream.NextAvailableBytes));
 
             stream.Clear();
-            await websocket.SendAsync(Encoding.UTF8.GetBytes("Hello"), WebSocketMessageType.Text, true, CancellationToken);
+            await websocket.SendAsync("Hello"u8.ToArray(), WebSocketMessageType.Text, true, CancellationToken);
 
             // Because context takeover is set by default if we try to send
             // the same message it should result in fewer bytes.
@@ -98,7 +98,7 @@ namespace System.Net.WebSockets.Tests
                 DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
-            byte[] bytes = Encoding.UTF8.GetBytes("Hello");
+            byte[] bytes = "Hello"u8.ToArray();
             WebSocketMessageFlags flags = WebSocketMessageFlags.DisableCompression | WebSocketMessageFlags.EndOfMessage;
             await websocket.SendAsync(bytes, WebSocketMessageType.Text, flags, CancellationToken);
 
@@ -116,7 +116,7 @@ namespace System.Net.WebSockets.Tests
                 DangerousDeflateOptions = new WebSocketDeflateOptions()
             });
 
-            byte[] bytes = Encoding.UTF8.GetBytes("Hello");
+            byte[] bytes = "Hello"u8.ToArray();
             await websocket.SendAsync(Memory<byte>.Empty, WebSocketMessageType.Text, endOfMessage: false, CancellationToken);
             await websocket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, CancellationToken);
 
@@ -181,7 +181,7 @@ namespace System.Net.WebSockets.Tests
 
             for (var i = 0; i < 100; ++i)
             {
-                await websocket.SendAsync(Encoding.UTF8.GetBytes("Hello"), WebSocketMessageType.Text, true, CancellationToken);
+                await websocket.SendAsync("Hello"u8.ToArray(), WebSocketMessageType.Text, true, CancellationToken);
 
                 // Without context takeover the message should look the same every time
                 Assert.Equal("C107F248CDC9C90700", Convert.ToHexString(stream.NextAvailableBytes));
@@ -644,6 +644,41 @@ namespace System.Net.WebSockets.Tests
             }
 
             Assert.Equal(frame1.Length + frame2.Length, messageSize);
+        }
+
+        [Fact]
+        public async Task DisposeShouldNotCorruptStateWhileReceiving()
+        {
+            WebSocketTestStream stream = new();
+            using WebSocket server = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
+            {
+                IsServer = true,
+                KeepAliveInterval = TimeSpan.Zero,
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
+            });
+            using WebSocket client = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
+            {
+                IsServer = false,
+                KeepAliveInterval = TimeSpan.Zero,
+                DangerousDeflateOptions = new WebSocketDeflateOptions()
+            });
+
+            byte[] buffer = new byte[64];
+
+            // Send two messages so that the zlib stream has data in its internal dictionary
+            await SendTextAsync("Hello World", client);
+            await server.ReceiveAsync(buffer, CancellationToken.None);
+            buffer.AsSpan().Clear();
+
+            stream.DelayForNextRead = TimeSpan.FromSeconds(1);
+            stream.IgnoreCancellationToken = true;
+            await SendTextAsync("Hello Worlds", client);
+
+            Task<WebSocketReceiveResult> receiveTask = server.ReceiveAsync(buffer, CancellationToken.None);
+            server.Dispose();
+
+            var result = await receiveTask;
+            Assert.Equal("Hello Worlds", Encoding.UTF8.GetString(buffer.AsSpan(0, result.Count)));
         }
 
         private ValueTask SendTextAsync(string text, WebSocket websocket, bool disableCompression = false)

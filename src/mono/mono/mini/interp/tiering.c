@@ -32,6 +32,7 @@ get_tier_up_imethod (InterpMethod *imethod)
 	new_imethod->code_type = imethod->code_type;
 	new_imethod->rtype = imethod->rtype;
 	new_imethod->param_types = imethod->param_types;
+	new_imethod->is_invoke = imethod->is_invoke;
 	new_imethod->optimized = TRUE;
 	new_imethod->prof_flags = imethod->prof_flags;
 
@@ -155,8 +156,8 @@ mono_interp_register_imethod_patch_site (gpointer *imethod_ptr)
 	mono_os_mutex_unlock (&tiering_mutex);
 }
 
-void
-mono_interp_tier_up_frame_enter (InterpFrame *frame, ThreadContext *context, const guint16 **ip)
+const guint16*
+mono_interp_tier_up_frame_enter (InterpFrame *frame, ThreadContext *context)
 {
 	InterpMethod *optimized_method;
 	if (frame->imethod->optimized_imethod)
@@ -165,7 +166,7 @@ mono_interp_tier_up_frame_enter (InterpFrame *frame, ThreadContext *context, con
 		optimized_method = tier_up_method (frame->imethod, context);
 	context->stack_pointer = (guchar*)frame->stack + optimized_method->alloca_size;
 	frame->imethod = optimized_method;
-	*ip = optimized_method->code;
+	return optimized_method->code;
 }
 
 static int
@@ -180,8 +181,8 @@ lookup_patchpoint_data (InterpMethod *imethod, int data)
        return G_MAXINT32;
 }
 
-void
-mono_interp_tier_up_frame_patchpoint (InterpFrame *frame, ThreadContext *context, const guint16 **ip)
+const guint16*
+mono_interp_tier_up_frame_patchpoint (InterpFrame *frame, ThreadContext *context, int bb_index)
 {
 	InterpMethod *unoptimized_method = frame->imethod;
 	InterpMethod *optimized_method;
@@ -209,6 +210,7 @@ mono_interp_tier_up_frame_patchpoint (InterpFrame *frame, ThreadContext *context
 	}
 	context->stack_pointer = (guchar*)frame->stack + optimized_method->alloca_size;
 	frame->imethod = optimized_method;
-	int bb_index = (*ip) [1];
-	*ip = optimized_method->code + lookup_patchpoint_data (optimized_method, bb_index);
+	int offset = lookup_patchpoint_data (optimized_method, bb_index);
+	g_assert (offset != G_MAXINT32);
+	return optimized_method->code + offset;
 }

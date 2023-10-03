@@ -34,6 +34,11 @@ namespace Microsoft.Interop
             Pin,
 
             /// <summary>
+            /// Convert managed data to native data, assuming that any values pinned in the <see cref="Pin"/> stage are pinned.
+            /// </summary>
+            PinnedMarshal,
+
+            /// <summary>
             /// Call the generated P/Invoke
             /// </summary>
             /// <remarks>
@@ -43,19 +48,30 @@ namespace Microsoft.Interop
             Invoke,
 
             /// <summary>
+            /// Capture native values to ensure that we do not leak if an exception is thrown during unmarshalling
+            /// </summary>
+            UnmarshalCapture,
+
+            /// <summary>
             /// Convert native data to managed data
             /// </summary>
             Unmarshal,
 
             /// <summary>
-            /// Perform any cleanup required
+            /// Notify a marshaller object that the Invoke stage and all stages preceding the Invoke stage
+            /// successfully completed without any exceptions.
             /// </summary>
-            Cleanup,
+            NotifyForSuccessfulInvoke,
 
             /// <summary>
-            /// Keep alive any managed objects that need to stay alive across the call.
+            /// Perform any cleanup required on caller allocated resources
             /// </summary>
-            KeepAlive,
+            CleanupCallerAllocated,
+
+            /// <summary>
+            /// Perform any cleanup required on callee allocated resources
+            /// </summary>
+            CleanupCalleeAllocated,
 
             /// <summary>
             /// Convert native data to managed data even in the case of an exception during
@@ -64,16 +80,14 @@ namespace Microsoft.Interop
             GuaranteedUnmarshal
         }
 
+        public CodeEmitOptions CodeEmitOptions { get; init; } = new(SkipInit: true);
+
         /// <summary>
         /// The current stage being generated.
         /// </summary>
         public Stage CurrentStage { get; init; } = Stage.Invalid;
 
-        /// <summary>
-        /// Gets the currently targeted framework and version for stub code generation.
-        /// </summary>
-        /// <returns>A framework value and version.</returns>
-        public abstract (TargetFramework framework, Version version) GetTargetFramework();
+        public MarshalDirection Direction { get; init; } = MarshalDirection.ManagedToUnmanaged;
 
         /// <summary>
         /// The stub emits code that runs in a single stack frame and the frame spans over the native context.
@@ -124,6 +138,25 @@ namespace Microsoft.Interop
         public virtual string GetAdditionalIdentifier(TypePositionInfo info, string name)
         {
             return $"{GetIdentifiers(info).native}__{name}";
+        }
+
+        /// <summary>
+        /// Compute if the provided element is the return element for the stub that is being generated (not any inner call).
+        /// </summary>
+        /// <param name="info">The element information</param>
+        /// <returns><c>true</c> if the element is in the return position for this stub; otherwise, false.</returns>
+        public bool IsInStubReturnPosition(TypePositionInfo info)
+        {
+            if (Direction == MarshalDirection.ManagedToUnmanaged)
+            {
+                return info.IsManagedReturnPosition;
+            }
+            else if (Direction == MarshalDirection.UnmanagedToManaged)
+            {
+                return info.IsNativeReturnPosition;
+            }
+
+            throw new InvalidOperationException("Stub contexts should not be bidirectional");
         }
     }
 }

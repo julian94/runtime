@@ -369,8 +369,26 @@ namespace System.Text
             }
         }
 
+        /// <inheritdoc/>
+        public override unsafe bool TryGetBytes(ReadOnlySpan<char> chars, Span<byte> bytes, out int bytesWritten)
+        {
+            fixed (char* charsPtr = &MemoryMarshal.GetReference(chars))
+            fixed (byte* bytesPtr = &MemoryMarshal.GetReference(bytes))
+            {
+                int written = GetBytesCommon(charsPtr, chars.Length, bytesPtr, bytes.Length, throwForDestinationOverflow: false);
+                if (written >= 0)
+                {
+                    bytesWritten = written;
+                    return true;
+                }
+
+                bytesWritten = 0;
+                return false;
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private unsafe int GetBytesCommon(char* pChars, int charCount, byte* pBytes, int byteCount)
+        private unsafe int GetBytesCommon(char* pChars, int charCount, byte* pBytes, int byteCount, bool throwForDestinationOverflow = true)
         {
             // Common helper method for all non-EncoderNLS entry points to GetBytes.
             // A modification of this method should be copied in to each of the supported encodings: ASCII, UTF8, UTF16, UTF32.
@@ -394,7 +412,7 @@ namespace System.Text
             {
                 // Simple narrowing conversion couldn't operate on entire buffer - invoke fallback.
 
-                return GetBytesWithFallback(pChars, charCount, pBytes, byteCount, charsConsumed, bytesWritten);
+                return GetBytesWithFallback(pChars, charCount, pBytes, byteCount, charsConsumed, bytesWritten, throwForDestinationOverflow);
             }
         }
 
@@ -546,6 +564,24 @@ namespace System.Text
             }
         }
 
+        /// <inheritdoc/>
+        public override unsafe bool TryGetChars(ReadOnlySpan<byte> bytes, Span<char> chars, out int charsWritten)
+        {
+            fixed (byte* bytesPtr = &MemoryMarshal.GetReference(bytes))
+            fixed (char* charsPtr = &MemoryMarshal.GetReference(chars))
+            {
+                int written = GetCharsCommon(bytesPtr, bytes.Length, charsPtr, chars.Length, throwForDestinationOverflow: false);
+                if (written >= 0)
+                {
+                    charsWritten = written;
+                    return true;
+                }
+
+                charsWritten = 0;
+                return false;
+            }
+        }
+
         // WARNING:  If we throw an error, then System.Resources.ResourceReader calls this method.
         //           So if we're really broken, then that could also throw an error... recursively.
         //           So try to make sure GetChars can at least process all uses by
@@ -554,7 +590,7 @@ namespace System.Text
         // Note:  We throw exceptions on individually encoded surrogates and other non-shortest forms.
         //        If exceptions aren't turned on, then we drop all non-shortest &individual surrogates.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private unsafe int GetCharsCommon(byte* pBytes, int byteCount, char* pChars, int charCount)
+        private unsafe int GetCharsCommon(byte* pBytes, int byteCount, char* pChars, int charCount, bool throwForDestinationOverflow = true)
         {
             // Common helper method for all non-DecoderNLS entry points to GetChars.
             // A modification of this method should be copied in to each of the supported encodings: ASCII, UTF8, UTF16, UTF32.
@@ -578,7 +614,7 @@ namespace System.Text
             {
                 // Simple narrowing conversion couldn't operate on entire buffer - invoke fallback.
 
-                return GetCharsWithFallback(pBytes, byteCount, pChars, charCount, bytesConsumed, charsWritten);
+                return GetCharsWithFallback(pBytes, byteCount, pChars, charCount, bytesConsumed, charsWritten, throwForDestinationOverflow);
             }
         }
 
@@ -595,7 +631,7 @@ namespace System.Text
             return (int)(pOutputBufferRemaining - pChars);
         }
 
-        private protected sealed override unsafe int GetCharsWithFallback(ReadOnlySpan<byte> bytes, int originalBytesLength, Span<char> chars, int originalCharsLength, DecoderNLS? decoder)
+        private protected sealed override unsafe int GetCharsWithFallback(ReadOnlySpan<byte> bytes, int originalBytesLength, Span<char> chars, int originalCharsLength, DecoderNLS? decoder, bool throwForDestinationOverflow = true)
         {
             // We special-case DecoderReplacementFallback if it's telling us to write a single U+FFFD char,
             // since we believe this to be relatively common and we can handle it more efficiently than
@@ -626,7 +662,7 @@ namespace System.Text
             }
             else
             {
-                return base.GetCharsWithFallback(bytes, originalBytesLength, chars, originalCharsLength, decoder);
+                return base.GetCharsWithFallback(bytes, originalBytesLength, chars, originalCharsLength, decoder, throwForDestinationOverflow);
             }
         }
 
@@ -757,12 +793,22 @@ namespace System.Text
 
         public override int GetMaxByteCount(int charCount)
         {
-            if (charCount < 0)
-                throw new ArgumentOutOfRangeException(nameof(charCount),
-                     SR.ArgumentOutOfRange_NeedNonNegNum);
+            ArgumentOutOfRangeException.ThrowIfNegative(charCount);
 
-            // Characters would be # of characters + 1 in case left over high surrogate is ? * max fallback
-            long byteCount = (long)charCount + 1;
+            // GetMaxByteCount assumes that the caller might have a stateful Encoder instance. If the
+            // Encoder instance already has a captured high surrogate, then one of two things will
+            // happen:
+            //
+            // - The next char is a low surrogate, at which point the two chars together result in 4
+            //   UTF-8 bytes in the output; or
+            // - The next char is not a low surrogate (or the input reaches EOF), at which point the
+            //   standalone captured surrogate will go through the fallback routine.
+            //
+            // The second case is the worst-case scenario for expansion, so it's what we use for any
+            // pessimistic "max byte count" calculation: assume there's a captured surrogate and that
+            // it must fall back.
+
+            long byteCount = (long)charCount + 1; // +1 to account for captured surrogate, per above
 
             if (EncoderFallback.MaxCharCount > 1)
                 byteCount *= EncoderFallback.MaxCharCount;
@@ -778,12 +824,25 @@ namespace System.Text
 
         public override int GetMaxCharCount(int byteCount)
         {
-            if (byteCount < 0)
-                throw new ArgumentOutOfRangeException(nameof(byteCount),
-                     SR.ArgumentOutOfRange_NeedNonNegNum);
+            ArgumentOutOfRangeException.ThrowIfNegative(byteCount);
 
-            // Figure out our length, 1 char per input byte + 1 char if 1st byte is last byte of 4 byte surrogate pair
-            long charCount = ((long)byteCount + 1);
+            // GetMaxCharCount assumes that the caller might have a stateful Decoder instance. If the
+            // Decoder instance already has a captured partial UTF-8 subsequence, then one of two
+            // thngs will happen:
+            //
+            // - The next byte(s) won't complete the subsequence but will instead be consumed into
+            //   the Decoder's internal state, resulting in no character output; or
+            // - The next byte(s) will complete the subsequence, and the previously captured
+            //   subsequence and the next byte(s) will result in 1 - 2 chars output; or
+            // - The captured subsequence will be treated as a singular ill-formed subsequence, at
+            //   which point the captured subsequence will go through the fallback routine.
+            //   (See The Unicode Standard, Sec. 3.9 for more information on this.)
+            //
+            // The third case is the worst-case scenario for expansion, since it means 0 bytes of
+            // new input could cause any existing captured state to expand via fallback. So it's
+            // what we'll use for any pessimistic "max char count" calculation.
+
+            long charCount = ((long)byteCount + 1); // +1 to account for captured subsequence, as above
 
             // Non-shortest form would fall back, so get max count from fallback.
             // So would 11... followed by 11..., so you could fall back every byte

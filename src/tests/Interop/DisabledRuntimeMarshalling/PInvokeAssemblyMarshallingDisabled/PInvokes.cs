@@ -22,7 +22,7 @@ public class PInvokes
 
         // We use a the "green check mark" character so that we use both bytes and
         // have a value that can't be accidentally round-tripped.
-        char c = '✅';
+        char c = '\u2705';
         Assert.True(DisabledRuntimeMarshallingNative.CheckStructWithWCharAndShort(new StructWithWCharAndShortWithMarshalAs(s, c), s, c));
     }
 
@@ -65,7 +65,7 @@ public class PInvokes
     public static void Varargs_NotSupported()
     {
         AssertThrowsCorrectException(() => DisabledRuntimeMarshallingNative.CallWithVarargs(__arglist(1, 2, 3)));
-        
+
         static void AssertThrowsCorrectException(Action testCode)
         {
             try
@@ -104,7 +104,8 @@ public class PInvokes
     public static void NoBooleanNormalization()
     {
         byte byteVal = 42;
-        Assert.Equal(byteVal, Unsafe.As<bool, byte>(ref Unsafe.AsRef(DisabledRuntimeMarshallingNative.GetByteAsBool(byteVal))));
+        bool boolVal = DisabledRuntimeMarshallingNative.GetByteAsBool(byteVal);
+        Assert.Equal(byteVal, Unsafe.As<bool, byte>(ref Unsafe.AsRef(in boolVal)));
     }
 
     [Fact]
@@ -117,7 +118,7 @@ public class PInvokes
 
         // We use a the "green check mark" character so that we use both bytes and
         // have a value that can't be accidentally round-tripped.
-        char c = '✅';
+        char c = '\u2705';
         Assert.True(DisabledRuntimeMarshallingNative.CheckStructWithWCharAndShort(new StructWithWCharAndShort(s, c), s, c));
 
         Assert.False(DisabledRuntimeMarshallingNative.CheckStructWithShortAndBoolWithVariantBool_FailureExpected(new StructWithShortAndBool(s, b), s, b));
@@ -129,7 +130,7 @@ public class PInvokes
         short s = 42;
         // We use a the "green check mark" character so that we use both bytes and
         // have a value that can't be accidentally round-tripped.
-        char c = '✅';
+        char c = '\u2705';
         Assert.True(DisabledRuntimeMarshallingNative.CheckStructWithWCharAndShort(new StructWithShortAndGeneric<char>(s, c), s, c));
     }
 
@@ -139,7 +140,7 @@ public class PInvokes
         short s = 42;
         // We use a the "green check mark" character so that we use both bytes and
         // have a value that can't be accidentally round-tripped.
-        char c = '✅';
+        char c = '\u2705';
         Assert.True(DisabledRuntimeMarshallingNative.CheckStructWithWCharAndShort(new StructWithShortAndGeneric<short>(s, (short)c), s, (short)c));
     }
 
@@ -147,5 +148,12 @@ public class PInvokes
     public static void CanUseEnumsWithDisabledMarshalling()
     {
         Assert.Equal((byte)ByteEnum.Value, DisabledRuntimeMarshallingNative.GetEnumUnderlyingValue(ByteEnum.Value));
+    }
+
+    [Fact]
+    [SkipOnMono("Blocking this on CoreCLR should be good enough.")]
+    public static void Int128_NotSupported()
+    {
+        Assert.Throws<MarshalDirectiveException>(() => DisabledRuntimeMarshallingNative.CallWithInt128(default(Int128)));
     }
 }

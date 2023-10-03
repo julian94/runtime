@@ -4,6 +4,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using Microsoft.DotNet.XUnitExtensions;
 using Newtonsoft.Json;
 using Xunit;
 
@@ -11,8 +12,6 @@ namespace System.Text.Json.Serialization.Tests
 {
     public static partial class ValueTests
     {
-        public static bool IsX64 { get; } = Environment.Is64BitProcess;
-
         [Fact]
         public static void ReadPrimitives()
         {
@@ -392,7 +391,7 @@ namespace System.Text.Json.Serialization.Tests
 
         private static int SingleToInt32Bits(float value)
         {
-#if BUILDING_INBOX_LIBRARY
+#if NETCOREAPP
             return BitConverter.SingleToInt32Bits(value);
 #else
             return Unsafe.As<float, int>(ref value);
@@ -448,15 +447,22 @@ namespace System.Text.Json.Serialization.Tests
         //       problems on Linux due to the way deferred memory allocation works. On Linux, the allocation can
         //       succeed even if there is not enough memory but then the test may get killed by the OOM killer at the
         //       time the memory is accessed which triggers the full memory allocation.
-        [ConditionalTheory(nameof(IsX64))]
+        [ConditionalTheory(typeof(Environment), nameof(Environment.Is64BitProcess))]
         [PlatformSpecific(TestPlatforms.Windows | TestPlatforms.OSX)]
         [InlineData(MaxInt)]
         [InlineData(MaximumPossibleStringLength)]
         [OuterLoop]
         public static void VeryLongInputString(int length)
         {
-            // Verify that deserializer does not do any multiplication or addition on the string length
-            DeserializeLongJsonString(length);
+            try
+            {
+                // Verify that deserializer does not do any multiplication or addition on the string length
+                DeserializeLongJsonString(length);
+            }
+            catch (OutOfMemoryException)
+            {
+                throw new SkipTestException("Out of memory allocating large objects");
+            }
         }
 
         private static void DeserializeLongJsonString(int stringLength)
@@ -464,7 +470,7 @@ namespace System.Text.Json.Serialization.Tests
             string json;
             char fillChar = 'x';
 
-#if BUILDING_INBOX_LIBRARY
+#if NETCOREAPP
             json = string.Create(stringLength, fillChar, (chars, fillChar) =>
             {
                 chars.Fill(fillChar);
@@ -670,8 +676,11 @@ namespace System.Text.Json.Serialization.Tests
         [InlineData("\\u0032\\u0034\\u003A\\u0030\\u0030\\u003A\\u0030\\u0030")]
         [InlineData("00:60:00")]
         [InlineData("00:00:60")]
+        [InlineData("-00:00:00")]
         [InlineData("00:00:00.00000009")]
         [InlineData("900000000.00:00:00")]
+        [InlineData("1.00:00:00")]
+        [InlineData("0.00:00:00")]
         [InlineData("1:00:00")] // 'g' Format
         [InlineData("1:2:00:00")] // 'g' Format
         [InlineData("+00:00:00")]

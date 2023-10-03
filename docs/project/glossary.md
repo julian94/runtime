@@ -24,12 +24,14 @@ terminology.
 | DAC | Data Access Component. An abstraction layer over the internal structures in the runtime. |
 | EE | [Execution Engine](https://docs.microsoft.com/dotnet/standard/managed-execution-process#running_code). |
 | GC | [Garbage Collector](https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/botr/garbage-collection.md). |
+| IBC | Instrumented Block Counts - used as extension (`*.ibc`) for old PGO files. |
 | IPC | Inter-Process Communication. |
 | IL | Intermediate Language. Equivalent to CIL, also equivalent to [MSIL](https://docs.microsoft.com/dotnet/standard/managed-execution-process#compiling-to-msil). |
 | JIT | [Just-in-Time](https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/jit/ryujit-overview.md) compiler. RyuJIT is the code name for the next generation Just-in-Time(aka "JIT") for the .NET runtime. |
 | LCG | Lightweight Code Generation. An early name for [dynamic methods](https://github.com/dotnet/runtime/blob/main/src/coreclr/System.Private.CoreLib/src/System/Reflection/Emit/DynamicMethod.cs). |
 | MD | MetaData. |
 | MDA | Managed Debugging Assistant - see [details](https://docs.microsoft.com/dotnet/framework/debug-trace-profile/diagnosing-errors-with-managed-debugging-assistants) (Note: Not in .NET Core, equivalent diagnostic functionality is made available on a case-by-case basis, e.g. [#9418](https://github.com/dotnet/runtime/issues/9418)) |
+| MIBC | Managed Instrumented Block Counts - used as extension (`*.mibc`) for managed PGO files. |
 | MSIL | [Microsoft Intermediate Language](https://docs.microsoft.com/dotnet/standard/managed-execution-process#compiling-to-msil).Common Intermediate Language. Equivalent to IL, also equivalent to CIL. |
 | NGen | Native Image Generator. |
 | NYI | Not Yet Implemented. |
@@ -42,7 +44,7 @@ terminology.
 | Redhawk | Codename for experimental minimal managed code runtime that evolved into [CoreRT](https://github.com/dotnet/corert/). |
 | SDK | Software Development Kit. The [.NET SDK](https://docs.microsoft.com/dotnet/core/sdk) contains the .NET CLI, .NET libraries and runtime, and the dotnet driver. |
 | SEH | [Structured Exception Handling](https://docs.microsoft.com/windows/win32/debug/structured-exception-handling). Unified mechanism for handling hardware and software exceptions on Windows. |
-| SOS | [Son of Strike](https://docs.microsoft.com/archive/blogs/jasonz/sos-debugging-of-the-clr-part-1). The debugging extension for DbgEng based debuggers. Uses the DAC as an abstraction layer for its operation. |
+| SOS | [Son of Strike](https://learn.microsoft.com/dotnet/framework/tools/sos-dll-sos-debugging-extension). The debugging extension for DbgEng based debuggers. Uses the DAC as an abstraction layer for its operation. The obscure name derives from the original nickname for the CLR team at Microsoft: "Lightning". The team built a debugging tool humorously named "Strike", and a subset of that dubbed "Son of Strike". |
 | SPCL | `System.Private.CoreLib` - the lowest managed assembly in the libraries stack that contains `System.Object`, `String`, etc. |
 | SuperPMI | JIT component test framework (super fast JIT testing - it mocks/replays EE in EE-JIT interface) - see [SuperPMI details](https://github.com/dotnet/runtime/blob/main/src/coreclr/tools/superpmi/readme.md). |
 | SVR | The CLR used to be built as two variants, with one called "mscorsvr.dll", to mean the "server" version. In particular, it contained the server GC implementation, which was intended for multi-threaded apps capable of taking advantage of multiple processors. In the .NET Framework 2 release, the two variants were merged into "mscorwks.dll". The WKS version was the default, however the SVR version remained available. |
@@ -297,7 +299,7 @@ and enabling support for running WPF on .NET Core (Windows Only).
 [mono-winforms]: http://www.mono-project.com/docs/gui/winforms/
 [xunit]: https://github.com/xunit
 [mc.dot.net]: https://mc.dot.net/
-[ECMA-355]: http://www.ecma-international.org/publications/standards/Ecma-335.htm
+[ECMA-355]: https://www.ecma-international.org/publications-and-standards/standards/ecma-335
 [dotnet-tooling]: https://docs.microsoft.com/en-us/dotnet/core/tools/
 [dlr-architecture]: https://docs.microsoft.com/en-us/dotnet/framework/reflection-and-codedom/dynamic-language-runtime-overview#dlr-architecture
 [dlr-source]: https://github.com/IronLanguages/dlr

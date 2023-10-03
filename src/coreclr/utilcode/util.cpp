@@ -23,6 +23,13 @@
 
 #ifndef DACCESS_COMPILE
 UINT32 g_nClrInstanceId = 0;
+
+#if defined(TARGET_WINDOWS) && defined(TARGET_ARM64)
+// Flag to check if atomics feature is available on
+// the machine
+bool g_arm64_atomics_present = false;
+#endif
+
 #endif //!DACCESS_COMPILE
 
 //*****************************************************************************
@@ -92,9 +99,9 @@ HRESULT GetHex(                         // Return status.
 //*****************************************************************************
 // Convert a pointer to a string into a GUID.
 //*****************************************************************************
-HRESULT LPCSTRToGuid(                   // Return status.
-    LPCSTR      szGuid,                 // String to convert.
-    GUID        *psGuid)                // Buffer for converted GUID.
+BOOL LPCSTRToGuid(
+    LPCSTR szGuid,  // [IN] String to convert.
+    GUID* pGuid)    // [OUT] Buffer for converted GUID.
 {
     CONTRACTL
     {
@@ -108,33 +115,33 @@ HRESULT LPCSTRToGuid(                   // Return status.
     if (strlen(szGuid) != 38 || szGuid[0] != '{' || szGuid[9] != '-' ||
         szGuid[14] != '-' || szGuid[19] != '-' || szGuid[24] != '-' || szGuid[37] != '}')
     {
-        return (E_FAIL);
+        return FALSE;
     }
 
     // Parse the first 3 fields.
-    if (FAILED(GetHex(szGuid + 1, 4, &psGuid->Data1)))
-        return E_FAIL;
-    if (FAILED(GetHex(szGuid + 10, 2, &psGuid->Data2)))
-        return E_FAIL;
-    if (FAILED(GetHex(szGuid + 15, 2, &psGuid->Data3)))
-        return E_FAIL;
+    if (FAILED(GetHex(szGuid + 1, 4, &pGuid->Data1)))
+        return FALSE;
+    if (FAILED(GetHex(szGuid + 10, 2, &pGuid->Data2)))
+        return FALSE;
+    if (FAILED(GetHex(szGuid + 15, 2, &pGuid->Data3)))
+        return FALSE;
 
     // Get the last two fields (which are byte arrays).
     for (i = 0; i < 2; ++i)
     {
-        if (FAILED(GetHex(szGuid + 20 + (i * 2), 1, &psGuid->Data4[i])))
+        if (FAILED(GetHex(szGuid + 20 + (i * 2), 1, &pGuid->Data4[i])))
         {
-            return E_FAIL;
+        return FALSE;
         }
     }
     for (i=0; i < 6; ++i)
     {
-        if (FAILED(GetHex(szGuid + 25 + (i * 2), 1, &psGuid->Data4[i+2])))
+        if (FAILED(GetHex(szGuid + 25 + (i * 2), 1, &pGuid->Data4[i+2])))
         {
-            return E_FAIL;
+        return FALSE;
         }
     }
-    return S_OK;
+    return TRUE;
 }
 
 //
@@ -175,7 +182,7 @@ namespace
         if (phmodDll != nullptr)
             *phmodDll = nullptr;
 
-        bool fIsDllPathPrefix = (wszDllPath != nullptr) && (wcslen(wszDllPath) > 0) && (wszDllPath[wcslen(wszDllPath) - 1] == W('\\'));
+        bool fIsDllPathPrefix = (wszDllPath != nullptr) && (u16_strlen(wszDllPath) > 0) && (wszDllPath[u16_strlen(wszDllPath) - 1] == W('\\'));
 
         // - An empty string will be treated as NULL.
         // - A string ending will a backslash will be treated as a prefix for where to look for the DLL
@@ -209,7 +216,7 @@ namespace
         _ASSERTE(wszDllPath != nullptr);
 
         // We've got the name of the DLL to load, so load it.
-        HModuleHolder hDll = WszLoadLibraryEx(wszDllPath, nullptr, GetLoadWithAlteredSearchPathFlag());
+        HModuleHolder hDll = WszLoadLibrary(wszDllPath, nullptr, GetLoadWithAlteredSearchPathFlag());
         if (hDll == nullptr)
             return HRESULT_FROM_GetLastError();
 
@@ -362,7 +369,12 @@ BYTE * ClrVirtualAllocWithinRange(const BYTE *pMinAddr,
     {
         NOTHROW;
         PRECONDITION(dwSize != 0);
+
+#ifdef HOST_UNIX
+        PRECONDITION(flAllocationType == (MEM_RESERVE | MEM_RESERVE_EXECUTABLE));
+#else
         PRECONDITION(flAllocationType == MEM_RESERVE);
+#endif
     }
     CONTRACTL_END;
 
@@ -442,7 +454,7 @@ BYTE * ClrVirtualAllocWithinRange(const BYTE *pMinAddr,
             (mbInfo.RegionSize >= (SIZE_T) dwSize || mbInfo.RegionSize == 0))
         {
             // Try reserving the memory using VirtualAlloc now
-            pResult = (BYTE*)ClrVirtualAlloc(tryAddr, dwSize, MEM_RESERVE, flProtect);
+            pResult = (BYTE*)ClrVirtualAlloc(tryAddr, dwSize, flAllocationType, flProtect);
 
             // Normally this will be successful
             //
@@ -506,94 +518,7 @@ BYTE * ClrVirtualAllocWithinRange(const BYTE *pMinAddr,
     return pResult;
 }
 
-//******************************************************************************
-// NumaNodeInfo
-//******************************************************************************
-#if !defined(FEATURE_NATIVEAOT)
-
-/*static*/ LPVOID NumaNodeInfo::VirtualAllocExNuma(HANDLE hProc, LPVOID lpAddr, SIZE_T dwSize,
-                         DWORD allocType, DWORD prot, DWORD node)
-{
-    return ::VirtualAllocExNuma(hProc, lpAddr, dwSize, allocType, prot, node);
-}
-
 #ifdef HOST_WINDOWS
-/*static*/ BOOL NumaNodeInfo::GetNumaProcessorNodeEx(PPROCESSOR_NUMBER proc_no, PUSHORT node_no)
-{
-    return ::GetNumaProcessorNodeEx(proc_no, node_no);
-}
-/*static*/ bool NumaNodeInfo::GetNumaInfo(PUSHORT total_nodes, DWORD* max_procs_per_node)
-{
-    if (m_enableGCNumaAware)
-    {
-        DWORD currentProcsOnNode = 0;
-        for (uint16_t i = 0; i < m_nNodes; i++)
-        {
-            GROUP_AFFINITY processorMask;
-            if (GetNumaNodeProcessorMaskEx(i, &processorMask))
-            {
-                DWORD procsOnNode = 0;
-                uintptr_t mask = (uintptr_t)processorMask.Mask;
-                while (mask)
-                {
-                    procsOnNode++;
-                    mask &= mask - 1;
-                }
-
-                currentProcsOnNode = max(currentProcsOnNode, procsOnNode);
-            }
-        }
-
-        *max_procs_per_node = currentProcsOnNode;
-        *total_nodes = m_nNodes;
-        return true;
-    }
-
-    return false;
-}
-#else // HOST_WINDOWS
-/*static*/ BOOL NumaNodeInfo::GetNumaProcessorNodeEx(USHORT proc_no, PUSHORT node_no)
-{
-    return PAL_GetNumaProcessorNode(proc_no, node_no);
-}
-#endif // HOST_WINDOWS
-#endif
-
-/*static*/ BOOL NumaNodeInfo::m_enableGCNumaAware = FALSE;
-/*static*/ uint16_t NumaNodeInfo::m_nNodes = 0;
-/*static*/ BOOL NumaNodeInfo::InitNumaNodeInfoAPI()
-{
-#if !defined(FEATURE_NATIVEAOT)
-    //check for numa support if multiple heaps are used
-    ULONG highest = 0;
-
-    if (CLRConfig::GetConfigValue(CLRConfig::UNSUPPORTED_GCNumaAware) == 0)
-        return FALSE;
-
-    // fail to get the highest numa node number
-    if (!::GetNumaHighestNodeNumber(&highest) || (highest == 0))
-        return FALSE;
-
-    m_nNodes = (USHORT)(highest + 1);
-
-    return TRUE;
-#else
-    return FALSE;
-#endif
-}
-
-/*static*/ BOOL NumaNodeInfo::CanEnableGCNumaAware()
-{
-    return m_enableGCNumaAware;
-}
-
-/*static*/ void NumaNodeInfo::InitNumaNodeInfo()
-{
-    m_enableGCNumaAware = InitNumaNodeInfoAPI();
-}
-
-#ifdef HOST_WINDOWS
-
 //******************************************************************************
 // CPUGroupInfo
 //******************************************************************************
@@ -641,7 +566,7 @@ BYTE * ClrVirtualAllocWithinRange(const BYTE *pMinAddr,
 /*static*/ CPU_Group_Info *CPUGroupInfo::m_CPUGroupInfoArray = NULL;
 /*static*/ LONG CPUGroupInfo::m_initialization = 0;
 
-#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64))
+#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64))
 // Calculate greatest common divisor
 DWORD GCD(DWORD u, DWORD v)
 {
@@ -671,7 +596,7 @@ DWORD LCM(DWORD u, DWORD v)
     }
     CONTRACTL_END;
 
-#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64))
+#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64))
     BYTE *bBuffer = NULL;
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *pSLPIEx = NULL;
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *pRecord = NULL;
@@ -752,8 +677,17 @@ DWORD LCM(DWORD u, DWORD v)
     }
     CONTRACTL_END;
 
-#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64))
-    BOOL enableGCCPUGroups = Configuration::GetKnobBooleanValue(W("System.GC.CpuGroup"), CLRConfig::EXTERNAL_GCCpuGroup);
+#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64))
+    USHORT groupCount = 0;
+
+    // On Windows 11+ and Windows Server 2022+, a process is no longer restricted to a single processor group by default.
+    // If more than one processor group is available to the process (a non-affinitized process on Windows 11+),
+    // default to using multiple processor groups; otherwise, default to using a single processor group. This default
+    // behavior may be overridden by the configuration values below.
+    if (GetProcessGroupAffinity(GetCurrentProcess(), &groupCount, NULL) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        groupCount = 1;
+
+    BOOL enableGCCPUGroups = Configuration::GetKnobBooleanValue(W("System.GC.CpuGroup"), CLRConfig::EXTERNAL_GCCpuGroup, groupCount > 1);
 
     if (!enableGCCPUGroups)
         return;
@@ -765,7 +699,7 @@ DWORD LCM(DWORD u, DWORD v)
     if (m_nGroups > 1)
     {
         m_enableGCCPUGroups = TRUE;
-        m_threadUseAllCpuGroups = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_Thread_UseAllCpuGroups) != 0;
+        m_threadUseAllCpuGroups = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_Thread_UseAllCpuGroups, groupCount > 1) != 0;
         m_threadAssignCpuGroups = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_Thread_AssignCpuGroups) != 0;
 
         // Save the processor group affinity of the initial thread
@@ -829,7 +763,7 @@ DWORD LCM(DWORD u, DWORD v)
 {
     LIMITED_METHOD_CONTRACT;
 
-#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64))
+#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64))
     WORD bTemp = 0;
     WORD bDiff = processor_number - bTemp;
 
@@ -860,7 +794,7 @@ DWORD LCM(DWORD u, DWORD v)
     }
     CONTRACTL_END;
 
-#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64))
+#if !defined(FEATURE_NATIVEAOT) && (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64))
     _ASSERTE(m_enableGCCPUGroups && m_threadUseAllCpuGroups);
 
     PROCESSOR_NUMBER proc_no;
@@ -909,7 +843,7 @@ DWORD LCM(DWORD u, DWORD v)
     }
     CONTRACTL_END;
 
-#if (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64))
+#if (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64))
     WORD i, minGroup = 0;
     DWORD minWeight = 0;
 
@@ -951,7 +885,7 @@ found:
 /*static*/ void CPUGroupInfo::ClearCPUGroupAffinity(GROUP_AFFINITY *gf)
 {
     LIMITED_METHOD_CONTRACT;
-#if (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64))
+#if (defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64))
     _ASSERTE(m_enableGCCPUGroups && m_threadUseAllCpuGroups && m_threadAssignCpuGroups);
 
     WORD group = gf->Group;
@@ -1064,7 +998,6 @@ int GetCurrentProcessCpuCount()
             }
             else
             {
-                pmask &= smask;
                 count = 0;
 
                 while (pmask)
@@ -1143,7 +1076,6 @@ DWORD_PTR GetCurrentProcessCpuMask()
     if (!GetProcessAffinityMask(GetCurrentProcess(), &pmask, &smask))
         return 1;
 
-    pmask &= smask;
     return pmask;
 #else
     return 0;
@@ -1258,8 +1190,8 @@ void ConfigString::init(const CLRConfig::ConfigStringInfo & info)
 //=============================================================================
 // The string should be of the form
 // MyAssembly
-// MyAssembly;mscorlib;System
-// MyAssembly;mscorlib System
+// MyAssembly;System.Private.CoreLib;System
+// MyAssembly;System.Private.CoreLib System
 
 AssemblyNamesList::AssemblyNamesList(_In_ LPWSTR list)
 {
@@ -2086,274 +2018,6 @@ ErrExit:
 
 
 //*****************************************************************************
-//  Extract the movl 64-bit unsigned immediate from an IA64 bundle
-//  (Format X2)
-//*****************************************************************************
-UINT64 GetIA64Imm64(UINT64 * pBundle)
-{
-    WRAPPER_NO_CONTRACT;
-
-    UINT64 temp0 = PTR_UINT64(pBundle)[0];
-    UINT64 temp1 = PTR_UINT64(pBundle)[1];
-
-    return GetIA64Imm64(temp0, temp1);
-}
-
-UINT64 GetIA64Imm64(UINT64 qword0, UINT64 qword1)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    UINT64 imm64 = 0;
-
-#ifdef _DEBUG_IMPL
-    //
-    // make certain we're decoding a movl opcode, with template 4 or 5
-    //
-    UINT64    templa = (qword0 >>  0) & 0x1f;
-    UINT64    opcode = (qword1 >> 60) & 0xf;
-
-    _ASSERTE((opcode == 0x6) && ((templa == 0x4) || (templa == 0x5)));
-#endif
-
-    imm64  = (qword1 >> 59) << 63;       //  1 i
-    imm64 |= (qword1 << 41) >>  1;       // 23 high bits of imm41
-    imm64 |= (qword0 >> 46) << 22;       // 18 low  bits of imm41
-    imm64 |= (qword1 >> 23) & 0x200000;  //  1 ic
-    imm64 |= (qword1 >> 29) & 0x1F0000;  //  5 imm5c
-    imm64 |= (qword1 >> 43) & 0xFF80;    //  9 imm9d
-    imm64 |= (qword1 >> 36) & 0x7F;      //  7 imm7b
-
-    return imm64;
-}
-
-//*****************************************************************************
-//  Deposit the movl 64-bit unsigned immediate into an IA64 bundle
-//  (Format X2)
-//*****************************************************************************
-void PutIA64Imm64(UINT64 * pBundle, UINT64 imm64)
-{
-    LIMITED_METHOD_CONTRACT;
-
-#ifdef _DEBUG_IMPL
-    //
-    // make certain we're decoding a movl opcode, with template 4 or 5
-    //
-    UINT64    templa = (pBundle[0] >>  0) & 0x1f;
-    UINT64    opcode = (pBundle[1] >> 60) & 0xf ;
-
-    _ASSERTE((opcode == 0x6) && ((templa == 0x4) || (templa == 0x5)));
-#endif
-
-    const UINT64 mask0 = UI64(0x00003FFFFFFFFFFF);
-    const UINT64 mask1 = UI64(0xF000080FFF800000);
-
-    /* Clear all bits used as part of the imm64 */
-    pBundle[0] &= mask0;
-    pBundle[1] &= mask1;
-
-    UINT64 temp0;
-    UINT64 temp1;
-
-    temp1  = (imm64 >> 63)      << 59;  //  1 i
-    temp1 |= (imm64 & 0xFF80)   << 43;  //  9 imm9d
-    temp1 |= (imm64 & 0x1F0000) << 29;  //  5 imm5c
-    temp1 |= (imm64 & 0x200000) << 23;  //  1 ic
-    temp1 |= (imm64 & 0x7F)     << 36;  //  7 imm7b
-    temp1 |= (imm64 <<  1)      >> 41;  // 23 high bits of imm41
-    temp0  = (imm64 >> 22)      << 46;  // 18 low bits of imm41
-
-    /* Or in the new bits used in the imm64 */
-    pBundle[0] |= temp0;
-    pBundle[1] |= temp1;
-    FlushInstructionCache(GetCurrentProcess(),pBundle,16);
-}
-
-//*****************************************************************************
-//  Extract the IP-Relative signed 25-bit immediate from an IA64 bundle
-//  (Formats B1, B2 or B3)
-//  Note that due to branch target alignment requirements
-//       the lowest four bits in the result will always be zero.
-//*****************************************************************************
-INT32 GetIA64Rel25(UINT64 * pBundle, UINT32 slot)
-{
-    WRAPPER_NO_CONTRACT;
-
-    UINT64 temp0 = PTR_UINT64(pBundle)[0];
-    UINT64 temp1 = PTR_UINT64(pBundle)[1];
-
-    return GetIA64Rel25(temp0, temp1, slot);
-}
-
-INT32 GetIA64Rel25(UINT64 qword0, UINT64 qword1, UINT32 slot)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    INT32 imm25 = 0;
-
-    if (slot == 2)
-    {
-        if ((qword1 >> 59) & 1)
-            imm25 = 0xFF000000;
-        imm25 |= (qword1 >> 32) & 0x00FFFFF0;    // 20 imm20b
-    }
-    else if (slot == 1)
-    {
-        if ((qword1 >> 18) & 1)
-            imm25 = 0xFF000000;
-        imm25 |= (qword1 <<  9) & 0x00FFFE00;    // high 15 of imm20b
-        imm25 |= (qword0 >> 55) & 0x000001F0;    // low   5 of imm20b
-    }
-    else if (slot == 0)
-    {
-        if ((qword0 >> 41) & 1)
-            imm25 = 0xFF000000;
-        imm25 |= (qword0 >> 14) & 0x00FFFFF0;    // 20 imm20b
-    }
-
-    return imm25;
-}
-
-//*****************************************************************************
-//  Deposit the IP-Relative signed 25-bit immediate into an IA64 bundle
-//  (Formats B1, B2 or B3)
-//  Note that due to branch target alignment requirements
-//       the lowest four bits are required to be zero.
-//*****************************************************************************
-void PutIA64Rel25(UINT64 * pBundle, UINT32 slot, INT32 imm25)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    _ASSERTE((imm25 & 0xF) == 0);
-
-    if (slot == 2)
-    {
-        const UINT64 mask1 = UI64(0xF700000FFFFFFFFF);
-        /* Clear all bits used as part of the imm25 */
-        pBundle[1] &= mask1;
-
-        UINT64 temp1;
-
-        temp1  = (UINT64) (imm25 & 0x1000000) << 35;     //  1 s
-        temp1 |= (UINT64) (imm25 & 0x0FFFFF0) << 32;     // 20 imm20b
-
-        /* Or in the new bits used in the imm64 */
-        pBundle[1] |= temp1;
-    }
-    else if (slot == 1)
-    {
-        const UINT64 mask0 = UI64(0x0EFFFFFFFFFFFFFF);
-        const UINT64 mask1 = UI64(0xFFFFFFFFFFFB8000);
-        /* Clear all bits used as part of the imm25 */
-        pBundle[0] &= mask0;
-        pBundle[1] &= mask1;
-
-        UINT64 temp0;
-        UINT64 temp1;
-
-        temp1  = (UINT64) (imm25 & 0x1000000) >>  7;     //  1 s
-        temp1 |= (UINT64) (imm25 & 0x0FFFE00) >>  9;     // high 15 of imm20b
-        temp0  = (UINT64) (imm25 & 0x00001F0) << 55;     // low   5 of imm20b
-
-        /* Or in the new bits used in the imm64 */
-        pBundle[0] |= temp0;
-        pBundle[1] |= temp1;
-    }
-    else if (slot == 0)
-    {
-        const UINT64 mask0 = UI64(0xFFFFFDC00003FFFF);
-        /* Clear all bits used as part of the imm25 */
-        pBundle[0] &= mask0;
-
-        UINT64 temp0;
-
-        temp0  = (UINT64) (imm25 & 0x1000000) << 16;     //  1 s
-        temp0 |= (UINT64) (imm25 & 0x0FFFFF0) << 14;     // 20 imm20b
-
-        /* Or in the new bits used in the imm64 */
-        pBundle[0] |= temp0;
-
-    }
-    FlushInstructionCache(GetCurrentProcess(),pBundle,16);
-}
-
-//*****************************************************************************
-//  Extract the IP-Relative signed 64-bit immediate from an IA64 bundle
-//  (Formats X3 or X4)
-//*****************************************************************************
-INT64 GetIA64Rel64(UINT64 * pBundle)
-{
-    WRAPPER_NO_CONTRACT;
-
-    UINT64 temp0 = PTR_UINT64(pBundle)[0];
-    UINT64 temp1 = PTR_UINT64(pBundle)[1];
-
-    return GetIA64Rel64(temp0, temp1);
-}
-
-INT64 GetIA64Rel64(UINT64 qword0, UINT64 qword1)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    INT64 imm64 = 0;
-
-#ifdef _DEBUG_IMPL
-    //
-    // make certain we're decoding a brl opcode, with template 4 or 5
-    //
-    UINT64       templa = (qword0 >>  0) & 0x1f;
-    UINT64       opcode = (qword1 >> 60) & 0xf;
-
-    _ASSERTE(((opcode == 0xC) || (opcode == 0xD)) &&
-             ((templa == 0x4) || (templa == 0x5)));
-#endif
-
-    imm64  = (qword1 >> 59) << 63;         //  1 i
-    imm64 |= (qword1 << 41) >>  1;         // 23 high bits of imm39
-    imm64 |= (qword0 >> 48) << 24;         // 16 low  bits of imm39
-    imm64 |= (qword1 >> 32) & 0xFFFFF0;    // 20 imm20b
-                                          //  4 bits of zeros
-    return imm64;
-}
-
-//*****************************************************************************
-//  Deposit the IP-Relative signed 64-bit immediate into an IA64 bundle
-//  (Formats X3 or X4)
-//*****************************************************************************
-void PutIA64Rel64(UINT64 * pBundle, INT64 imm64)
-{
-    LIMITED_METHOD_CONTRACT;
-
-#ifdef _DEBUG_IMPL
-    //
-    // make certain we're decoding a brl opcode, with template 4 or 5
-    //
-    UINT64    templa = (pBundle[0] >>  0) & 0x1f;
-    UINT64    opcode = (pBundle[1] >> 60) & 0xf;
-
-    _ASSERTE(((opcode == 0xC) || (opcode == 0xD)) &&
-             ((templa == 0x4) || (templa == 0x5)));
-    _ASSERTE((imm64 & 0xF) == 0);
-#endif
-
-    const UINT64 mask0 = UI64(0x00003FFFFFFFFFFF);
-    const UINT64 mask1 = UI64(0xF700000FFF800000);
-
-    /* Clear all bits used as part of the imm64 */
-    pBundle[0] &= mask0;
-    pBundle[1] &= mask1;
-
-    UINT64 temp0  = (imm64 & UI64(0x000000FFFF000000)) << 24;  // 16 low  bits of imm39
-    UINT64 temp1  = (imm64 & UI64(0x8000000000000000)) >>  4   //  1 i
-                  | (imm64 & UI64(0x7FFFFF0000000000)) >> 40   // 23 high bits of imm39
-                  | (imm64 & UI64(0x0000000000FFFFF0)) << 32;  // 20 imm20b
-
-    /* Or in the new bits used in the imm64 */
-    pBundle[0] |= temp0;
-    pBundle[1] |= temp1;
-    FlushInstructionCache(GetCurrentProcess(),pBundle,16);
-}
-
-//*****************************************************************************
 //  Extract the 16-bit immediate from ARM Thumb2 Instruction (format T2_N)
 //*****************************************************************************
 static FORCEINLINE UINT16 GetThumb2Imm16(UINT16 * p)
@@ -2591,161 +2255,6 @@ void PutArm64Rel12(UINT32 * pCode, INT32 imm12)
     *pCode = addInstr;          // write the assembled instruction
 
     _ASSERTE(GetArm64Rel12(pCode) == imm12);
-}
-
-//---------------------------------------------------------------------
-// Splits a command line into argc/argv lists, using the VC7 parsing rules.
-//
-// This functions interface mimics the CommandLineToArgvW api.
-//
-// If function fails, returns NULL.
-//
-// If function suceeds, call delete [] on return pointer when done.
-//
-//---------------------------------------------------------------------
-// NOTE: Implementation-wise, once every few years it would be a good idea to
-// compare this code with the C runtime library's parse_cmdline method,
-// which is in vctools\crt\crtw32\startup\stdargv.c.  (Note we don't
-// support wild cards, and we use Unicode characters exclusively.)
-// We are up to date as of ~6/2005.
-//---------------------------------------------------------------------
-LPWSTR *SegmentCommandLine(LPCWSTR lpCmdLine, DWORD *pNumArgs)
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_FAULT;
-
-
-    *pNumArgs = 0;
-
-    int nch = (int)wcslen(lpCmdLine);
-
-    // Calculate the worstcase storage requirement. (One pointer for
-    // each argument, plus storage for the arguments themselves.)
-    int cbAlloc = (nch+1)*sizeof(LPWSTR) + sizeof(WCHAR)*(nch + 1);
-    LPWSTR pAlloc = new (nothrow) WCHAR[cbAlloc / sizeof(WCHAR)];
-    if (!pAlloc)
-        return NULL;
-
-    LPWSTR *argv = (LPWSTR*) pAlloc;  // We store the argv pointers in the first halt
-    LPWSTR  pdst = (LPWSTR)( ((BYTE*)pAlloc) + sizeof(LPWSTR)*(nch+1) ); // A running pointer to second half to store arguments
-    LPCWSTR psrc = lpCmdLine;
-    WCHAR   c;
-    BOOL    inquote;
-    BOOL    copychar;
-    int     numslash;
-
-    // First, parse the program name (argv[0]). Argv[0] is parsed under
-    // special rules. Anything up to the first whitespace outside a quoted
-    // subtring is accepted. Backslashes are treated as normal characters.
-    argv[ (*pNumArgs)++ ] = pdst;
-    inquote = FALSE;
-    do {
-        if (*psrc == W('"') )
-        {
-            inquote = !inquote;
-            c = *psrc++;
-            continue;
-        }
-        *pdst++ = *psrc;
-
-        c = *psrc++;
-
-    } while ( (c != W('\0') && (inquote || (c != W(' ') && c != W('\t')))) );
-
-    if ( c == W('\0') ) {
-        psrc--;
-    } else {
-        *(pdst-1) = W('\0');
-    }
-
-    inquote = FALSE;
-
-
-
-    /* loop on each argument */
-    for(;;)
-    {
-        if ( *psrc )
-        {
-            while (*psrc == W(' ') || *psrc == W('\t'))
-            {
-                ++psrc;
-            }
-        }
-
-        if (*psrc == W('\0'))
-            break;              /* end of args */
-
-        /* scan an argument */
-        argv[ (*pNumArgs)++ ] = pdst;
-
-        /* loop through scanning one argument */
-        for (;;)
-        {
-            copychar = 1;
-            /* Rules: 2N backslashes + " ==> N backslashes and begin/end quote
-               2N+1 backslashes + " ==> N backslashes + literal "
-               N backslashes ==> N backslashes */
-            numslash = 0;
-            while (*psrc == W('\\'))
-            {
-                /* count number of backslashes for use below */
-                ++psrc;
-                ++numslash;
-            }
-            if (*psrc == W('"'))
-            {
-                /* if 2N backslashes before, start/end quote, otherwise
-                   copy literally */
-                if (numslash % 2 == 0)
-                {
-                    if (inquote && psrc[1] == W('"'))
-                    {
-                        psrc++;    /* Double quote inside quoted string */
-                    }
-                    else
-                    {
-                        /* skip first quote char and copy second */
-                        copychar = 0;       /* don't copy quote */
-                        inquote = !inquote;
-                    }
-                }
-                numslash /= 2;          /* divide numslash by two */
-            }
-
-            /* copy slashes */
-            while (numslash--)
-            {
-                *pdst++ = W('\\');
-            }
-
-            /* if at end of arg, break loop */
-            if (*psrc == W('\0') || (!inquote && (*psrc == W(' ') || *psrc == W('\t'))))
-                break;
-
-            /* copy character into argument */
-            if (copychar)
-            {
-                *pdst++ = *psrc;
-            }
-            ++psrc;
-        }
-
-        /* null-terminate the argument */
-
-        *pdst++ = W('\0');          /* terminate string */
-    }
-
-    /* We put one last argument in -- a null ptr */
-    argv[ (*pNumArgs) ] = NULL;
-
-    // If we hit this assert, we overwrote our destination buffer.
-    // Since we're supposed to allocate for the worst
-    // case, either the parsing rules have changed or our worse case
-    // formula is wrong.
-    _ASSERTE((BYTE*)pdst <= (BYTE*)pAlloc + cbAlloc);
-    return argv;
 }
 
 //======================================================================
@@ -2987,7 +2496,7 @@ namespace Reg
                 // terminating NULL is not a legitimate scenario for REG_SZ - this must
                 // be done using REG_MULTI_SZ - however this was tolerated in the
                 // past and so it would be a breaking change to stop doing so.
-                _ASSERTE(wcslen(wszValueBuf) <= (size / sizeof(WCHAR)) - 1);
+                _ASSERTE(u16_strlen(wszValueBuf) <= (size / sizeof(WCHAR)) - 1);
                 ssValue.CloseBuffer((COUNT_T)wcsnlen(wszValueBuf, (size_t)size));
             }
             else
@@ -3036,8 +2545,8 @@ namespace Com
         {
             STANDARD_VM_CONTRACT;
 
-            WCHAR wszClsid[39];
-            if (GuidToLPWSTR(rclsid, wszClsid, ARRAY_SIZE(wszClsid)) == 0)
+            WCHAR wszClsid[GUID_STR_BUFFER_LEN];
+            if (GuidToLPWSTR(rclsid, wszClsid) == 0)
                 return E_UNEXPECTED;
 
             StackSString ssKeyName;

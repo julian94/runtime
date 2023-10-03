@@ -101,23 +101,23 @@ void fx_resolver_t::display_missing_framework_error(
     if (fx_dir.length())
     {
         fx_ver_dirs = fx_dir;
-        framework_info::get_all_framework_infos(get_directory(fx_dir), fx_name, disable_multilevel_lookup, &framework_infos);
+        framework_info::get_all_framework_infos(get_directory(fx_dir), fx_name.c_str(), disable_multilevel_lookup, &framework_infos);
     }
     else
     {
         fx_ver_dirs = dotnet_root;
     }
 
-    framework_info::get_all_framework_infos(dotnet_root, fx_name, disable_multilevel_lookup, &framework_infos);
+    framework_info::get_all_framework_infos(dotnet_root, fx_name.c_str(), disable_multilevel_lookup, &framework_infos);
 
     // Display the error message about missing FX.
     if (fx_version.length())
     {
-        trace::error(_X("Framework: '%s', version '%s' (%s)"), fx_name.c_str(), fx_version.c_str(), get_arch());
+        trace::error(_X("Framework: '%s', version '%s' (%s)"), fx_name.c_str(), fx_version.c_str(), get_current_arch_name());
     }
     else
     {
-        trace::error(_X("Framework: '%s', (%s)"), fx_name.c_str(), get_arch());
+        trace::error(_X("Framework: '%s', (%s)"), fx_name.c_str(), get_current_arch_name());
     }
 
     trace::error(_X(".NET location: %s\n"), dotnet_root.c_str());
@@ -138,7 +138,7 @@ void fx_resolver_t::display_missing_framework_error(
     pal::string_t url = get_download_url(fx_name.c_str(), fx_version.c_str());
     trace::error(
         _X("\n")
-        _X("Learn about framework resolution:\n")
+        DOC_LINK_INTRO _X("\n")
         DOTNET_APP_LAUNCH_FAILED_URL
         _X("\n\n")
         _X("To install missing framework, download:\n")

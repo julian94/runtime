@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Test.Common;
 using System.Threading.Tasks;
+using Microsoft.DotNet.XUnitExtensions;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -25,7 +26,7 @@ namespace System.Net.Http.Functional.Tests
             from host in Hosts(scheme)
             select new object[] { scheme, useSsl, useAuth, host };
 
-        [Theory]
+        [ConditionalTheory]
         [MemberData(nameof(TestLoopbackAsync_MemberData))]
         public async Task TestLoopbackAsync(string scheme, bool useSsl, bool useAuth, string host)
         {
@@ -38,11 +39,10 @@ namespace System.Net.Http.Functional.Tests
                 async uri =>
                 {
                     await using var proxy = useAuth ? new LoopbackSocksServer("DOTNET", "424242") : new LoopbackSocksServer();
-                    using HttpClientHandler handler = CreateHttpClientHandler();
+                    using HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
                     using HttpClient client = CreateHttpClient(handler);
 
                     handler.Proxy = new WebProxy($"{scheme}://127.0.0.1:{proxy.Port}");
-                    handler.ServerCertificateCustomValidationCallback = TestHelper.AllowAllCertificates;
 
                     if (useAuth)
                     {
@@ -129,6 +129,7 @@ namespace System.Net.Http.Functional.Tests
     }
 
     [SkipOnPlatform(TestPlatforms.Browser, "UseProxy not supported on Browser")]
+    [SkipOnPlatform(TestPlatforms.Android, "The sync Send method is not supported on mobile platforms")]
     public sealed class SocksProxyTest_Http1_Sync : SocksProxyTest
     {
         public SocksProxyTest_Http1_Sync(ITestOutputHelper helper) : base(helper) { }

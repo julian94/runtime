@@ -11,8 +11,12 @@
 
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.XPath;
 using Test.Cryptography;
@@ -1447,7 +1451,7 @@ namespace System.Security.Cryptography.Xml.Tests
 ";
                 SignedXml sign = GetSignedXml(string.Format(xml, bits));
                 // only multiple of 8 bits are supported
-                sign.CheckSignature(new HMACSHA1(Encoding.ASCII.GetBytes("secret")));
+                sign.CheckSignature(new HMACSHA1("secret"u8.ToArray()));
             }
 
             for (int i = 1; i < 160; i++)
@@ -1483,10 +1487,10 @@ namespace System.Security.Cryptography.Xml.Tests
 ";
             SignedXml sign = GetSignedXml(xml);
 
-            CheckErratum(sign, new HMACSHA1(Encoding.ASCII.GetBytes("no clue")), "1");
+            CheckErratum(sign, new HMACSHA1("no clue"u8.ToArray()), "1");
             CheckErratum(sign, new HMACSHA1(Encoding.ASCII.GetBytes("")), "2");
-            CheckErratum(sign, new HMACSHA1(Encoding.ASCII.GetBytes("oops")), "3");
-            CheckErratum(sign, new HMACSHA1(Encoding.ASCII.GetBytes("secret")), "4");
+            CheckErratum(sign, new HMACSHA1("oops"u8.ToArray()), "3");
+            CheckErratum(sign, new HMACSHA1("secret"u8.ToArray()), "4");
         }
 
         [ActiveIssue("https://github.com/dotnet/runtime/issues/20429")]
@@ -1496,7 +1500,7 @@ namespace System.Security.Cryptography.Xml.Tests
             // 72 is a multiple of 8 but smaller than the minimum of 80 bits
             string xml = @"<Signature xmlns=""http://www.w3.org/2000/09/xmldsig#""><SignedInfo><CanonicalizationMethod Algorithm=""http://www.w3.org/TR/2001/REC-xml-c14n-20010315"" /><SignatureMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#hmac-sha1""><HMACOutputLength>72</HMACOutputLength></SignatureMethod><Reference URI=""#object""><DigestMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#sha1"" /><DigestValue>nz4GS0NbH2SrWlD/4fX313CoTzc=</DigestValue></Reference></SignedInfo><SignatureValue>2dimB+P5Aw5K</SignatureValue><Object Id=""object"">some other text</Object></Signature>";
             SignedXml sign = GetSignedXml(xml);
-            CheckErratum(sign, new HMACSHA1(Encoding.ASCII.GetBytes("secret")), "72");
+            CheckErratum(sign, new HMACSHA1("secret"u8.ToArray()), "72");
         }
 
         [ActiveIssue("https://github.com/dotnet/runtime/issues/20429")]
@@ -1506,7 +1510,7 @@ namespace System.Security.Cryptography.Xml.Tests
             // 80 bits is the minimum (and the half-size of HMACSHA1)
             string xml = @"<Signature xmlns=""http://www.w3.org/2000/09/xmldsig#""><SignedInfo><CanonicalizationMethod Algorithm=""http://www.w3.org/TR/2001/REC-xml-c14n-20010315"" /><SignatureMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#hmac-sha1""><HMACOutputLength>80</HMACOutputLength></SignatureMethod><Reference URI=""#object""><DigestMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#sha1"" /><DigestValue>nz4GS0NbH2SrWlD/4fX313CoTzc=</DigestValue></Reference></SignedInfo><SignatureValue>jVQPtLj61zNYjw==</SignatureValue><Object Id=""object"">some other text</Object></Signature>";
             SignedXml sign = GetSignedXml(xml);
-            Assert.True(sign.CheckSignature(new HMACSHA1(Encoding.ASCII.GetBytes("secret"))));
+            Assert.True(sign.CheckSignature(new HMACSHA1("secret"u8.ToArray())));
         }
 
         [ActiveIssue("https://github.com/dotnet/runtime/issues/20429")]
@@ -1516,7 +1520,7 @@ namespace System.Security.Cryptography.Xml.Tests
             // 80bits is smaller than the half-size of HMACSHA256
             string xml = @"<Signature xmlns=""http://www.w3.org/2000/09/xmldsig#""><SignedInfo><CanonicalizationMethod Algorithm=""http://www.w3.org/TR/2001/REC-xml-c14n-20010315"" /><SignatureMethod Algorithm=""http://www.w3.org/2001/04/xmldsig-more#hmac-sha256""><HMACOutputLength>80</HMACOutputLength></SignatureMethod><Reference URI=""#object""><DigestMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#sha1"" /><DigestValue>nz4GS0NbH2SrWlD/4fX313CoTzc=</DigestValue></Reference></SignedInfo><SignatureValue>vPtw7zKVV/JwQg==</SignatureValue><Object Id=""object"">some other text</Object></Signature>";
             SignedXml sign = GetSignedXml(xml);
-            CheckErratum(sign, new HMACSHA256(Encoding.ASCII.GetBytes("secret")), "80");
+            CheckErratum(sign, new HMACSHA256("secret"u8.ToArray()), "80");
         }
 
         [ActiveIssue("https://github.com/dotnet/runtime/issues/20429")]
@@ -1526,7 +1530,7 @@ namespace System.Security.Cryptography.Xml.Tests
             // 128 is the half-size of HMACSHA256
             string xml = @"<Signature xmlns=""http://www.w3.org/2000/09/xmldsig#""><SignedInfo><CanonicalizationMethod Algorithm=""http://www.w3.org/TR/2001/REC-xml-c14n-20010315"" /><SignatureMethod Algorithm=""http://www.w3.org/2001/04/xmldsig-more#hmac-sha256""><HMACOutputLength>128</HMACOutputLength></SignatureMethod><Reference URI=""#object""><DigestMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#sha1"" /><DigestValue>nz4GS0NbH2SrWlD/4fX313CoTzc=</DigestValue></Reference></SignedInfo><SignatureValue>aegpvkAwOL8gN/CjSnW6qw==</SignatureValue><Object Id=""object"">some other text</Object></Signature>";
             SignedXml sign = GetSignedXml(xml);
-            Assert.True(sign.CheckSignature(new HMACSHA256(Encoding.ASCII.GetBytes("secret"))));
+            Assert.True(sign.CheckSignature(new HMACSHA256("secret"u8.ToArray())));
         }
 
         [Fact]
@@ -1534,7 +1538,7 @@ namespace System.Security.Cryptography.Xml.Tests
         {
             string xml = @"<Signature xmlns=""http://www.w3.org/2000/09/xmldsig#""><SignedInfo><CanonicalizationMethod Algorithm=""http://www.w3.org/TR/2001/REC-xml-c14n-20010315"" /><SignatureMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#hmac-sha1"" /><Reference URI=""#object""><DigestMethod Algorithm=""http://www.w3.org/2000/09/xmldsig#sha1"" /><DigestValue>7/XTsHaBSOnJ/jXD5v0zL6VKYsk=</DigestValue></Reference></SignedInfo><SignatureValue>a0goL9esBUKPqtFYgpp2KST4huk=</SignatureValue><Object Id=""object"">some text</Object></Signature>";
             SignedXml sign = GetSignedXml(xml);
-            Assert.True(sign.CheckSignature(new HMACSHA1(Encoding.ASCII.GetBytes("secret"))));
+            Assert.True(sign.CheckSignature(new HMACSHA1("secret"u8.ToArray())));
         }
 
         [ActiveIssue("https://github.com/dotnet/runtime/issues/20429")]
@@ -1559,7 +1563,7 @@ namespace System.Security.Cryptography.Xml.Tests
 </Signature>
 ";
             SignedXml sign = GetSignedXml(xml);
-            Assert.Throws<CryptographicException>(() => sign.CheckSignature(new HMACSHA1(Encoding.ASCII.GetBytes("no clue"))));
+            Assert.Throws<CryptographicException>(() => sign.CheckSignature(new HMACSHA1("no clue"u8.ToArray())));
         }
 
         [ActiveIssue("https://github.com/dotnet/runtime/issues/20429")]
@@ -1584,7 +1588,139 @@ namespace System.Security.Cryptography.Xml.Tests
 </Signature>
 ";
             SignedXml sign = GetSignedXml(xml);
-            Assert.Throws<FormatException>(() => sign.CheckSignature(new HMACSHA1(Encoding.ASCII.GetBytes("no clue"))));
+            Assert.Throws<FormatException>(() => sign.CheckSignature(new HMACSHA1("no clue"u8.ToArray())));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/74115")]
+        public void VerifyXmlResolver(bool provideResolver)
+        {
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+            string xml = $@"<!DOCTYPE foo [<!ENTITY xxe SYSTEM ""http://127.0.0.1:{port}/"" >]>
+<ExampleDoc>Example doc to be signed.&xxe;<Signature xmlns=""http://www.w3.org/2000/09/xmldsig#"">
+    <SignedInfo>
+      <CanonicalizationMethod Algorithm=""http://www.w3.org/TR/2001/REC-xml-c14n-20010315"" />
+      <SignatureMethod Algorithm=""http://www.w3.org/2001/04/xmldsig-more#hmac-sha256"" />
+      <Reference URI="""">
+        <Transforms>
+          <Transform Algorithm=""http://www.w3.org/2000/09/xmldsig#enveloped-signature"" />
+        </Transforms>
+        <DigestMethod Algorithm=""http://www.w3.org/2001/04/xmlenc#sha256"" />
+        <DigestValue>CLUSJx4H4EwydAT/CtNWYu/l6R8uZe0tO2rlM/o0iM4=</DigestValue>
+      </Reference>
+    </SignedInfo>
+    <SignatureValue>o0IAVyovNUYKs5CCIRpZVy6noLpdJBp8LwWrqzzhKPg=</SignatureValue>
+  </Signature>
+</ExampleDoc>";
+
+            bool listenerContacted = false;
+            CancellationTokenSource tokenSource = new CancellationTokenSource();
+            Task listenerTask = ProcessRequests(listener, () => listenerContacted = true, tokenSource.Token);
+
+            XmlDocument doc = new XmlDocument();
+            doc.LoadXml(xml);
+
+            SignedXml signedXml = new SignedXml(doc);
+            signedXml.LoadXml((XmlElement)doc.GetElementsByTagName("Signature")[0]);
+
+            try
+            {
+                using (HMAC key = new HMACSHA256(Encoding.UTF8.GetBytes("sample")))
+                {
+                    if (provideResolver)
+                    {
+                        signedXml.Resolver = new XmlUrlResolver();
+                        Assert.True(signedXml.CheckSignature(key), "signedXml.CheckSignature(key)");
+                        Assert.True(listenerContacted, "listenerContacted");
+                    }
+                    else
+                    {
+                        XmlException ex = Assert.Throws<XmlException>(() => signedXml.CheckSignature(key));
+                        Assert.False(listenerContacted, "listenerContacted");
+                    }
+                }
+            }
+            finally
+            {
+                tokenSource.Cancel();
+
+                try
+                {
+                    listener.Stop();
+                }
+                catch
+                {
+                }
+            }
+
+            static async Task ProcessRequests(
+                TcpListener listener,
+                Action requestReceived,
+                CancellationToken cancellationToken)
+            {
+                static byte[] GetResponse() =>
+                    ("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Length: 0\r\n\r\n"u8).ToArray();
+
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    Socket socket;
+
+                    try
+                    {
+#if NETCOREAPP
+                        socket = await listener.AcceptSocketAsync(cancellationToken);
+#else
+                        socket = await listener.AcceptSocketAsync();
+#endif
+                    }
+                    catch
+                    {
+                        break;
+                    }
+
+                    using (socket)
+                    using (NetworkStream stream = new NetworkStream(socket))
+                    {
+                        requestReceived();
+                        byte[] buf = new byte[1024];
+                        int offset = 0;
+
+                        // Drain out the request.
+                        do
+                        {
+                            int read = await stream.ReadAsync(buf, offset, buf.Length - offset, cancellationToken);
+
+                            if (read <= 0)
+                            {
+                                break;
+                            }
+
+                            offset += read;
+
+                            if (offset >= buf.Length)
+                            {
+                                throw new InvalidOperationException();
+                            }
+
+                            if (offset > 4)
+                            {
+                                if (buf.AsSpan(offset - 4, 4).SequenceEqual("\r\n\r\n"u8))
+                                {
+                                    break;
+                                }
+                            }
+                        } while (true);
+
+                        byte[] response = GetResponse();
+                        await stream.WriteAsync(response, 0, response.Length, cancellationToken);
+                    }
+                }
+            }
         }
 
         [Fact]

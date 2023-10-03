@@ -22,11 +22,11 @@ namespace System.Runtime.InteropServices.RuntimeInformationTests
         public void VerifyEnvironmentVariable()
         {
             RemoteInvokeOptions options = new RemoteInvokeOptions();
-            options.StartInfo.EnvironmentVariables.Add("DOTNET_RUNTIME_ID", "overridenFromEnv-rid");
+            options.StartInfo.EnvironmentVariables.Add("DOTNET_RUNTIME_ID", "overriddenFromEnv-rid");
 
             RemoteExecutor.Invoke(() =>
             {
-                Assert.Equal("overridenFromEnv-rid", RuntimeInformation.RuntimeIdentifier);
+                Assert.Equal("overriddenFromEnv-rid", RuntimeInformation.RuntimeIdentifier);
             }, options).Dispose();
         }
 
@@ -35,9 +35,9 @@ namespace System.Runtime.InteropServices.RuntimeInformationTests
         {
             RemoteExecutor.Invoke(() =>
             {
-                AppDomain.CurrentDomain.SetData("RUNTIME_IDENTIFIER", "overriden-rid");
+                AppDomain.CurrentDomain.SetData("RUNTIME_IDENTIFIER", "overridden-rid");
 
-                Assert.Equal("overriden-rid", RuntimeInformation.RuntimeIdentifier);
+                Assert.Equal("overridden-rid", RuntimeInformation.RuntimeIdentifier);
             }).Dispose();
         }
 
@@ -74,7 +74,9 @@ namespace System.Runtime.InteropServices.RuntimeInformationTests
                 .Substring("ID=".Length)
                 .Trim('\"', '\'');
 
-            Assert.StartsWith(expectedOSName, RuntimeInformation.RuntimeIdentifier, StringComparison.OrdinalIgnoreCase);
+            // Should either start with linux (portable builds or NativeAOT) or the OS name (source builds)
+            Assert.True(RuntimeInformation.RuntimeIdentifier.StartsWith("linux", StringComparison.OrdinalIgnoreCase)
+                || RuntimeInformation.RuntimeIdentifier.StartsWith(expectedOSName, StringComparison.OrdinalIgnoreCase));
         }
 
         [Fact, PlatformSpecific(TestPlatforms.FreeBSD)]

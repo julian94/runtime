@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -29,9 +30,11 @@ namespace Microsoft.WebAssembly.Diagnostics
         public bool IsRunning => _runLoop?.IsRunning == true;
         public RunLoopExitState Stopped => _runLoop?.StoppedState;
 
-        public DevToolsProxy(ILogger logger, string loggerId)
+        protected readonly ProxyOptions _options;
+        public DevToolsProxy(ProxyOptions options, ILogger logger, string loggerId)
         {
             _loggerId = loggerId;
+            _options = options;
             this.logger = logger;
         }
 
@@ -49,7 +52,7 @@ namespace Microsoft.WebAssembly.Diagnostics
 
         protected Task Send(DevToolsQueue queue, JObject o, CancellationToken token)
         {
-            logger.LogTrace($"to-{queue.Id}: {GetFromOrTo(o)} {o}");
+            Log("protocol", $"to-{queue.Id}: {GetFromOrTo(o)} {o}");
             var msg = o.ToString(Formatting.None);
             var bytes = Encoding.UTF8.GetBytes(msg);
 
@@ -235,6 +238,9 @@ namespace Microsoft.WebAssembly.Diagnostics
 
                 ClientWebSocket browserSocket = new();
                 browserSocket.Options.KeepAliveInterval = Timeout.InfiniteTimeSpan;
+                var proxy = WebRequest.DefaultWebProxy;
+                if (_options is not null && _options.IgnoreProxyForLocalAddress && proxy is not null && !proxy.IsBypassed(browserUri)) //only bypass the proxy for local addresses if it is not already an exception in the OS settings
+                    browserSocket.Options.Proxy = new WebProxy(proxy.GetProxy(browserUri), true);
                 await browserSocket.ConnectAsync(browserUri, cts.Token);
 
                 using var ideConn = new DevToolsDebuggerConnection(ideSocket, "ide", logger);
@@ -275,6 +281,9 @@ namespace Microsoft.WebAssembly.Diagnostics
 
         protected void Log(string priority, string msg)
         {
+            if (priority == "protocol")
+                msg = msg.TruncateLogMessage();
+
             switch (priority)
             {
                 case "protocol":

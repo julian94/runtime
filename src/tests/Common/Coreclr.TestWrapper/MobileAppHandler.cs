@@ -9,25 +9,32 @@ namespace CoreclrTestLib
 {
     public class MobileAppHandler
     {
-        public int InstallMobileApp(string platform, string category, string testBinaryBase, string reportBase)
+        // See https://github.com/dotnet/xharness/blob/main/src/Microsoft.DotNet.XHarness.Common/CLI/ExitCode.cs
+        // 78 - PACKAGE_INSTALLATION_FAILURE
+        // 81 - DEVICE_NOT_FOUND
+        // 82 - RETURN_CODE_NOT_SET
+        // 83 - APP_LAUNCH_FAILURE
+        // 84 - DEVICE_FILE_COPY_FAILURE
+        // 86 - PACKAGE_INSTALLATION_TIMEOUT
+        // 88 - SIMULATOR_FAILURE
+        // 89 - DEVICE_FAILURE
+        // 90 - APP_LAUNCH_TIMEOUT
+        // 91 - ADB_FAILURE
+        private static readonly int[] _knownExitCodes = new int[] { 78, 81, 82, 83, 84, 86, 88, 89, 90, 91 };
+
+        public int InstallMobileApp(string platform, string category, string testBinaryBase, string reportBase, string targetOS)
         {
-            return HandleMobileApp("install", platform, category, testBinaryBase, reportBase);
+            return HandleMobileApp("install", platform, category, testBinaryBase, reportBase, targetOS);
         }
 
-        public int UninstallMobileApp(string platform, string category, string testBinaryBase, string reportBase)
+        public int UninstallMobileApp(string platform, string category, string testBinaryBase, string reportBase, string targetOS)
         {
-            return HandleMobileApp("uninstall", platform, category, testBinaryBase, reportBase);
+            return HandleMobileApp("uninstall", platform, category, testBinaryBase, reportBase, targetOS);
         }
 
-        private static int HandleMobileApp(string action, string platform, string category, string testBinaryBase, string reportBase)
+        private static int HandleMobileApp(string action, string platform, string category, string testBinaryBase, string reportBase, string targetOS)
         {
             int exitCode = -100;
-
-            if (File.Exists($"{testBinaryBase}/.retry"))
-            {
-                // We have requested a work item retry because of an infra issue - no point executing further tests
-                return exitCode;
-            }
 
             string outputFile = Path.Combine(reportBase, action, $"{category}_{action}.output.txt");
             string errorFile = Path.Combine(reportBase, action, $"{category}_{action}.error.txt");
@@ -75,7 +82,24 @@ namespace CoreclrTestLib
                     }
                     else // platform is apple
                     {
-                        cmdStr += $" --output-directory={reportBase}/{action} --target=ios-simulator-64"; //To Do: target should be either emulator or device
+                        string targetString = "";
+
+                        switch (targetOS) {
+                            case "ios":
+                                targetString = "ios-device";
+                                break;
+                            case "iossimulator":
+                                targetString = "ios-simulator-64";
+                                break;
+                            case "tvos":
+                                targetString = "tvos-device";
+                                break;
+                            case "tvossimulator":
+                                targetString = "tvos-simulator";
+                                break;
+                        }
+
+                        cmdStr += $" --output-directory={reportBase}/{action} --target={targetString}";
 
                         if (action == "install")
                         {
@@ -119,23 +143,7 @@ namespace CoreclrTestLib
                         {
                             // Process completed.
                             exitCode = process.ExitCode;
-
-                            // See https://github.com/dotnet/xharness/blob/main/src/Microsoft.DotNet.XHarness.Common/CLI/ExitCode.cs
-                            // 78 - PACKAGE_INSTALLATION_FAILURE
-                            // 81 - DEVICE_NOT_FOUND
-                            // 85 - ADB_DEVICE_ENUMERATION_FAILURE
-                            // 86 - PACKAGE_INSTALLATION_TIMEOUT
-                            // 88 - SIMULATOR_FAILURE
-                            // 89 - DEVICE_FAILURE
-                            // 90 - APP_LAUNCH_TIMEOUT
-                            // 91 - ADB_FAILURE
-                            var retriableCodes = new[] { 78, 81, 85, 86, 88, 89, 90, 91 };
-                            if (retriableCodes.Contains(exitCode))
-                            {
-                                CreateRetryFile($"{testBinaryBase}/.retry", exitCode, category);
-                                return exitCode;
-                            }
-
+                            CheckExitCode(exitCode, testBinaryBase, category, outputWriter);
                             Task.WaitAll(copyOutput, copyError);
                         }
                         else
@@ -190,6 +198,20 @@ namespace CoreclrTestLib
             {
                 writer.WriteLine($"appName: {appName}; exitCode: {exitCode}"); 
             }
+        }
+
+        public static void CheckExitCode(int exitCode, string testBinaryBase, string category, StreamWriter outputWriter)
+        {
+            if (_knownExitCodes.Contains(exitCode))
+            {
+                CreateRetryFile($"{testBinaryBase}/.retry", exitCode, category);
+                outputWriter.WriteLine("\nInfra issue was detected and a work item retry was requested");
+            }
+        }
+
+        public static bool IsRetryRequested(string testBinaryBase)
+        {
+            return File.Exists($"{testBinaryBase}/.retry");
         }
     }
 }

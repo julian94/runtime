@@ -35,6 +35,10 @@ namespace System.Data.OleDb
             this.oledbErrors = errors;
         }
 
+#if NET8_0_OR_GREATER
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [EditorBrowsable(EditorBrowsableState.Never)]
+#endif
         public override void GetObjectData(SerializationInfo si, StreamingContext context)
         {
             ArgumentNullException.ThrowIfNull(si);
@@ -57,8 +61,7 @@ namespace System.Data.OleDb
         {
             get
             {
-                OleDbErrorCollection errors = this.oledbErrors;
-                return ((null != errors) ? errors : new OleDbErrorCollection(null));
+                return this.oledbErrors ?? new OleDbErrorCollection(null);
             }
         }
 

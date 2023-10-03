@@ -20,7 +20,7 @@ namespace System.Security.Cryptography.X509Certificates
         ///   class.
         /// </summary>
         public X509AuthorityInformationAccessExtension()
-            : base(Oids.AuthorityInformationAccess)
+            : base(Oids.AuthorityInformationAccessOid)
         {
             _decoded = Array.Empty<AccessDescriptionAsn>();
         }
@@ -43,7 +43,7 @@ namespace System.Security.Cryptography.X509Certificates
         ///   <paramref name="rawData" /> did not decode as an Authority Information Access extension.
         /// </exception>
         public X509AuthorityInformationAccessExtension(byte[] rawData, bool critical = false)
-            : base(Oids.AuthorityInformationAccess, rawData, critical)
+            : base(Oids.AuthorityInformationAccessOid, rawData, critical)
         {
             _decoded = Decode(RawData);
         }
@@ -63,7 +63,7 @@ namespace System.Security.Cryptography.X509Certificates
         ///   <paramref name="rawData" /> did not decode as an Authority Information Access extension.
         /// </exception>
         public X509AuthorityInformationAccessExtension(ReadOnlySpan<byte> rawData, bool critical = false)
-            : base(Oids.AuthorityInformationAccess, rawData, critical)
+            : base(Oids.AuthorityInformationAccessOid, rawData, critical)
         {
             _decoded = Decode(RawData);
         }
@@ -95,7 +95,7 @@ namespace System.Security.Cryptography.X509Certificates
             IEnumerable<string>? ocspUris,
             IEnumerable<string>? caIssuersUris,
             bool critical = false)
-            : base(Oids.AuthorityInformationAccess, Encode(ocspUris, caIssuersUris), critical)
+            : base(Oids.AuthorityInformationAccessOid, Encode(ocspUris, caIssuersUris), critical, skipCopy: true)
         {
             _decoded = Decode(RawData);
         }
@@ -169,13 +169,7 @@ namespace System.Security.Cryptography.X509Certificates
         public IEnumerable<string> EnumerateUris(Oid accessMethodOid)
         {
             ArgumentNullException.ThrowIfNull(accessMethodOid);
-
-            if (string.IsNullOrEmpty(accessMethodOid.Value))
-            {
-                throw new ArgumentException(
-                    SR.Format(SR.Arg_EmptyOrNullString_Named, "accessMethodOid.Value"),
-                    nameof(accessMethodOid));
-            }
+            ArgumentException.ThrowIfNullOrEmpty(accessMethodOid.Value);
 
             return EnumerateUris(accessMethodOid.Value);
         }

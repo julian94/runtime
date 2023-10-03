@@ -26,7 +26,7 @@ namespace System.Linq.Expressions
         private readonly Expression _body;
 
         // This can be flipped to false using feature switches at publishing time
-        public static bool CanCompileToIL => true;
+        public static bool CanCompileToIL => RuntimeFeature.IsDynamicCodeSupported;
 
         // This could be flipped to false using feature switches at publishing time
         public static bool CanInterpret => true;
@@ -138,7 +138,10 @@ namespace System.Linq.Expressions
         {
             if (CanCompileToIL)
             {
+#pragma warning disable IL3050
+                // Analyzer doesn't yet understand feature switches
                 return Compiler.LambdaCompiler.Compile(this);
+#pragma warning restore IL3050
             }
             else
             {
@@ -154,7 +157,7 @@ namespace System.Linq.Expressions
         /// <returns>A delegate containing the compiled version of the lambda.</returns>
         public Delegate Compile(bool preferInterpretation)
         {
-            if (CanCompileToIL && CanInterpret && preferInterpretation)
+            if (CanInterpret && preferInterpretation)
             {
                 return new Interpreter.LightCompiler().CompileTop(this).CreateDelegate();
             }
@@ -218,7 +221,10 @@ namespace System.Linq.Expressions
         {
             if (CanCompileToIL)
             {
+#pragma warning disable IL3050
+                // Analyzer doesn't yet understand feature switches
                 return (TDelegate)(object)Compiler.LambdaCompiler.Compile(this);
+#pragma warning restore IL3050
             }
             else
             {
@@ -234,7 +240,7 @@ namespace System.Linq.Expressions
         /// <returns>A delegate containing the compiled version of the lambda.</returns>
         public new TDelegate Compile(bool preferInterpretation)
         {
-            if (CanCompileToIL && CanInterpret && preferInterpretation)
+            if (CanInterpret && preferInterpretation)
             {
                 return (TDelegate)(object)new Interpreter.LightCompiler().CompileTop(this).CreateDelegate();
             }
@@ -370,7 +376,7 @@ namespace System.Linq.Expressions
             throw Error.ArgumentOutOfRange(nameof(index));
         }
 
-        internal override ReadOnlyCollection<ParameterExpression> GetOrMakeParameters() => EmptyReadOnlyCollection<ParameterExpression>.Instance;
+        internal override ReadOnlyCollection<ParameterExpression> GetOrMakeParameters() => ReadOnlyCollection<ParameterExpression>.Empty;
 
         internal override Expression<TDelegate> Rewrite(Expression body, ParameterExpression[]? parameters)
         {
@@ -607,24 +613,26 @@ namespace System.Linq.Expressions
         /// Creates an Expression{T} given the delegate type. Caches the
         /// factory method to speed up repeated creations for the same T.
         /// </summary>
+        [UnconditionalSuppressMessage("DynamicCode", "IL3050",
+            Justification = "MakeGenericType is only used for a Type that should be a delegate type, which are always reference types.")]
         internal static LambdaExpression CreateLambda(Type delegateType, Expression body, string? name, bool tailCall, ReadOnlyCollection<ParameterExpression> parameters)
         {
             // Get or create a delegate to the public Expression.Lambda<T>
             // method and call that will be used for creating instances of this
             // delegate type
             Func<Expression, string?, bool, ReadOnlyCollection<ParameterExpression>, LambdaExpression>? fastPath;
-            CacheDict<Type, Func<Expression, string?, bool, ReadOnlyCollection<ParameterExpression>, LambdaExpression>>? factories = s_lambdaFactories;
-            if (factories == null)
-            {
-                s_lambdaFactories = factories = new CacheDict<Type, Func<Expression, string?, bool, ReadOnlyCollection<ParameterExpression>, LambdaExpression>>(50);
-            }
+            CacheDict<Type, Func<Expression, string?, bool, ReadOnlyCollection<ParameterExpression>, LambdaExpression>>? factories =
+                s_lambdaFactories ??= new CacheDict<Type, Func<Expression, string?, bool, ReadOnlyCollection<ParameterExpression>, LambdaExpression>>(50);
 
             if (!factories.TryGetValue(delegateType, out fastPath))
             {
                 MethodInfo create;
                 if (LambdaExpression.CanCompileToIL)
                 {
+#pragma warning disable IL3050
+                    // Analyzer doesn't yet understand feature switches
                     create = typeof(Expression<>).MakeGenericType(delegateType).GetMethod("Create", BindingFlags.Static | BindingFlags.NonPublic)!;
+#pragma warning restore IL3050
                 }
                 else
                 {

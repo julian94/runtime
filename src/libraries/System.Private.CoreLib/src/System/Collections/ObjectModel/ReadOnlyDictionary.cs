@@ -4,13 +4,14 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 
 namespace System.Collections.ObjectModel
 {
     [Serializable]
     [DebuggerTypeProxy(typeof(IDictionaryDebugView<,>))]
     [DebuggerDisplay("Count = {Count}")]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class ReadOnlyDictionary<TKey, TValue> : IDictionary<TKey, TValue>, IDictionary, IReadOnlyDictionary<TKey, TValue> where TKey : notnull
     {
         private readonly IDictionary<TKey, TValue> m_dictionary; // Do not rename (binary serialization)
@@ -27,17 +28,16 @@ namespace System.Collections.ObjectModel
             m_dictionary = dictionary;
         }
 
+        /// <summary>Gets an empty <see cref="ReadOnlyDictionary{TKey, TValue}"/>.</summary>
+        /// <value>An empty <see cref="ReadOnlyDictionary{TKey, TValue}"/>.</value>
+        /// <remarks>The returned instance is immutable and will always be empty.</remarks>
+        public static ReadOnlyDictionary<TKey, TValue> Empty { get; } = new ReadOnlyDictionary<TKey, TValue>(new Dictionary<TKey, TValue>());
+
         protected IDictionary<TKey, TValue> Dictionary => m_dictionary;
 
-        public KeyCollection Keys
-        {
-            get => _keys ?? (_keys = new KeyCollection(m_dictionary.Keys));
-        }
+        public KeyCollection Keys => _keys ??= new KeyCollection(m_dictionary.Keys);
 
-        public ValueCollection Values
-        {
-            get => _values ?? (_values = new ValueCollection(m_dictionary.Values));
-        }
+        public ValueCollection Values => _values ??= new ValueCollection(m_dictionary.Values);
 
         public bool ContainsKey(TKey key) => m_dictionary.ContainsKey(key);
 
@@ -194,7 +194,7 @@ namespace System.Collections.ObjectModel
                     object[]? objects = array as object[];
                     if (objects == null)
                     {
-                        throw new ArgumentException(SR.Argument_InvalidArrayType, nameof(array));
+                        throw new ArgumentException(SR.Argument_IncompatibleArrayType, nameof(array));
                     }
 
                     try
@@ -206,7 +206,7 @@ namespace System.Collections.ObjectModel
                     }
                     catch (ArrayTypeMismatchException)
                     {
-                        throw new ArgumentException(SR.Argument_InvalidArrayType, nameof(array));
+                        throw new ArgumentException(SR.Argument_IncompatibleArrayType, nameof(array));
                     }
                 }
             }
@@ -270,7 +270,7 @@ namespace System.Collections.ObjectModel
                 throw new NotSupportedException(SR.NotSupported_ReadOnlyCollection);
             }
 
-            bool ICollection<TKey>.Contains(TKey item)
+            public bool Contains(TKey item)
             {
                 return _collection.Contains(item);
             }

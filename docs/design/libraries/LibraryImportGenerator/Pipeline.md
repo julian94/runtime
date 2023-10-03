@@ -75,18 +75,28 @@ The stub code generator itself will handle some initial setup and variable decla
 1. `Pin`: data pinning in preparation for calling the generated P/Invoke
     - Call `Generate` on the marshalling generator for every parameter
     - Ignore any statements that are not `fixed` statements
+1. `PinnedMarshal`: conversion of managed to native data
+    - Call `Generate` on the marshalling generator for every parameter
 1. `Invoke`: call to the generated P/Invoke
     - Call `AsArgument` on the marshalling generator for every parameter
     - Create invocation statement that calls the generated P/Invoke
-1. `KeepAlive`: keep alive any objects who's native representation won't keep them alive across the call.
+1. `NotifyForSuccessfulInvoke`: Notify a marshaller that all stages through the "Invoke" stage were successful.
+    - Used to keep alive any objects who's native representation won't keep them alive across the call.
     - Call `Generate` on the marshalling generator for every parameter.
+1. `UnmarshalCapture`: capture any native out parameters to avoid memory leaks if exceptions are thrown during `Unmarshal`.
+    - If the method has a non-void return, call `Generate` on the marshalling generator for the return
+    - Call `Generate` on the marshalling generator for every parameter
 1. `Unmarshal`: conversion of native to managed data
     - If the method has a non-void return, call `Generate` on the marshalling generator for the return
     - Call `Generate` on the marshalling generator for every parameter
 1. `GuaranteedUnmarshal`: conversion of native to managed data even when an exception is thrown
     - Call `Generate` on the marshalling generator for every parameter.
-1. `Cleanup`: free any allocated resources
+    - If this stage has any statements, put them in an if statement where the condition represents whether the call succeeded
+1. `CleanupCallerAllocated`: free any resources allocated by the caller
     - Call `Generate` on the marshalling generator for every parameter
+1. `CleanupCalleeAllocated`: if the native method succeeded, free any resources allocated by the callee (`out` parameters and return values)
+    - Call `Generate` on the marshalling generator for every parameter
+    - If this stage has any statements, put them in an if statement where the condition represents whether the call succeeded
 
 Generated P/Invoke structure (if no code is generated for `GuaranteedUnmarshal` and `Cleanup`, the `try-finally` is omitted):
 ```C#
@@ -97,15 +107,18 @@ try
     << Marshal >>
     << Pin >> (fixed)
     {
+        << Pinned Marshal >>
         << Invoke >>
     }
-    << Keep Alive >>
+    << Notify For Successful Invoke >>
+    << Unmarshal Capture >>
     << Unmarshal >>
 }
 finally
 {
     << GuaranteedUnmarshal >>
-    << Cleanup >>
+    << CleanupCalleeAllocated >>
+    << CleanupCallerAllocated >>
 }
 ```
 
@@ -130,12 +143,12 @@ Support for these features is indicated in code by the `abstract` `SingleFrameSp
 
 The various scenarios mentioned above have different levels of support for these specialized features:
 
-| Scenarios | Pinning and Stack allocation across the native context | Storing additional temporary state in locals |
-|------|-----|-----|
-| P/Invoke | supported | supported |
-| Reverse P/Invoke | unsupported | supported |
-| User-defined structure content marshalling | unsupported | unsupported |
-| non-blittable array marshalling | unsupported | unuspported |
+| Scenarios                                  | Pinning and Stack allocation across the native context | Storing additional temporary state in locals |
+|--------------------------------------------|--------------------------------------------------------|----------------------------------------------|
+| P/Invoke                                   | supported                                              | supported                                    |
+| Reverse P/Invoke                           | unsupported                                            | supported                                    |
+| User-defined structure content marshalling | unsupported                                            | unsupported                                  |
+| non-blittable array marshalling            | unsupported                                            | unuspported                                  |
 
 To help enable developers to use the full model described in the [Struct Marshalling design](./StructMarshalling.md), we declare that in contexts where `AdditionalTemporaryStateLivesAcrossStages` is false, developers can still assume that state declared in the `Setup` phase is valid in any phase, but any side effects in code emitted in a phase other than `Setup` will not be guaranteed to be visible in other phases. This enables developers to still use the identifiers declared in the `Setup` phase in their other phases, but they'll need to take care to design their generators to handle these rules.
 

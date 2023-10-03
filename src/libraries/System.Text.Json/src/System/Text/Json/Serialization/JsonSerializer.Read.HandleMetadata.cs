@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Nodes;
@@ -11,19 +12,17 @@ namespace System.Text.Json
 {
     public static partial class JsonSerializer
     {
-        internal static readonly byte[] s_idPropertyName
-            = new byte[] { (byte)'$', (byte)'i', (byte)'d' };
+        internal const string IdPropertyName = "$id";
+        internal const string RefPropertyName = "$ref";
+        internal const string TypePropertyName = "$type";
+        internal const string ValuesPropertyName = "$values";
 
-        internal static readonly byte[] s_refPropertyName
-            = new byte[] { (byte)'$', (byte)'r', (byte)'e', (byte)'f' };
+        private static readonly byte[] s_idPropertyName = "$id"u8.ToArray();
+        private static readonly byte[] s_refPropertyName = "$ref"u8.ToArray();
+        private static readonly byte[] s_typePropertyName = "$type"u8.ToArray();
+        private static readonly byte[] s_valuesPropertyName = "$values"u8.ToArray();
 
-        internal static readonly byte[] s_typePropertyName
-            = new byte[] { (byte)'$', (byte)'t', (byte)'y', (byte)'p', (byte)'e' };
-
-        internal static readonly byte[] s_valuesPropertyName
-            = new byte[] { (byte)'$', (byte)'v', (byte)'a', (byte)'l', (byte)'u', (byte)'e', (byte)'s' };
-
-        internal static bool TryReadMetadata(JsonConverter converter, JsonTypeInfo jsonTypeInfo, ref Utf8JsonReader reader, ref ReadStack state)
+        internal static bool TryReadMetadata(JsonConverter converter, JsonTypeInfo jsonTypeInfo, ref Utf8JsonReader reader, scoped ref ReadStack state)
         {
             Debug.Assert(state.Current.ObjectState == StackFrameObjectState.StartToken);
             Debug.Assert(state.Current.CanContainMetadata);
@@ -52,7 +51,7 @@ namespace System.Text.Json
                     // We just read a property. The only valid next tokens are EndObject and PropertyName.
                     Debug.Assert(reader.TokenType == JsonTokenType.PropertyName);
 
-                    if (state.Current.MetadataPropertyNames.HasFlag(MetadataPropertyName.Ref))
+                    if ((state.Current.MetadataPropertyNames & MetadataPropertyName.Ref) != 0)
                     {
                         // No properties whatsoever should follow a $ref property.
                         ThrowHelper.ThrowJsonException_MetadataReferenceObjectCannotContainOtherProperties(reader.GetSpan(), ref state);
@@ -77,7 +76,7 @@ namespace System.Text.Json
                             if (!converter.CanHaveMetadata)
                             {
                                 // Should not be permitted unless the converter is capable of handling metadata.
-                                ThrowHelper.ThrowJsonException_MetadataCannotParsePreservedObjectIntoImmutable(converter.TypeToConvert);
+                                ThrowHelper.ThrowJsonException_MetadataCannotParsePreservedObjectIntoImmutable(converter.Type!);
                             }
 
                             break;
@@ -93,7 +92,7 @@ namespace System.Text.Json
                             if (converter.IsValueType)
                             {
                                 // Should not be permitted if the converter is a struct.
-                                ThrowHelper.ThrowJsonException_MetadataInvalidReferenceToValueType(converter.TypeToConvert);
+                                ThrowHelper.ThrowJsonException_MetadataInvalidReferenceToValueType(converter.Type!);
                             }
                             if (state.Current.MetadataPropertyNames != 0)
                             {
@@ -104,7 +103,7 @@ namespace System.Text.Json
                             break;
 
                         case MetadataPropertyName.Type:
-                            state.Current.JsonPropertyName = jsonTypeInfo.PolymorphicTypeResolver?.CustomTypeDiscriminatorPropertyNameUtf8 ?? s_typePropertyName;
+                            state.Current.JsonPropertyName = jsonTypeInfo.PolymorphicTypeResolver?.TypeDiscriminatorPropertyNameUtf8 ?? s_typePropertyName;
 
                             if (jsonTypeInfo.PolymorphicTypeResolver is null)
                             {
@@ -226,7 +225,7 @@ namespace System.Text.Json
         {
             return
                 (propertyName.Length > 0 && propertyName[0] == '$') ||
-                (resolver?.CustomTypeDiscriminatorPropertyNameUtf8?.AsSpan().SequenceEqual(propertyName) == true);
+                (resolver?.TypeDiscriminatorPropertyNameUtf8?.AsSpan().SequenceEqual(propertyName) == true);
         }
 
         internal static MetadataPropertyName GetMetadataPropertyName(ReadOnlySpan<byte> propertyName, PolymorphicTypeResolver? resolver)
@@ -252,7 +251,7 @@ namespace System.Text.Json
                         }
                         break;
 
-                    case 5 when resolver?.CustomTypeDiscriminatorPropertyNameUtf8 is null:
+                    case 5 when resolver?.TypeDiscriminatorPropertyNameUtf8 is null:
                         if (propertyName[1] == 't' &&
                             propertyName[2] == 'y' &&
                             propertyName[3] == 'p' &&
@@ -276,7 +275,7 @@ namespace System.Text.Json
                 }
             }
 
-            if (resolver?.CustomTypeDiscriminatorPropertyNameUtf8 is byte[] customTypeDiscriminator &&
+            if (resolver?.TypeDiscriminatorPropertyNameUtf8 is byte[] customTypeDiscriminator &&
                 propertyName.SequenceEqual(customTypeDiscriminator))
             {
                 return MetadataPropertyName.Type;
@@ -287,7 +286,7 @@ namespace System.Text.Json
 
         internal static bool TryHandleReferenceFromJsonElement(
             ref Utf8JsonReader reader,
-            ref ReadStack state,
+            scoped ref ReadStack state,
             JsonElement element,
             [NotNullWhen(true)] out object? referenceValue)
         {
@@ -351,8 +350,8 @@ namespace System.Text.Json
 
         internal static bool TryHandleReferenceFromJsonNode(
             ref Utf8JsonReader reader,
-            ref ReadStack state,
-            JsonNode jsonNode,
+            scoped ref ReadStack state,
+            JsonNode? jsonNode,
             [NotNullWhen(true)] out object? referenceValue)
         {
             bool refMetadataFound = false;
@@ -361,7 +360,7 @@ namespace System.Text.Json
             if (jsonNode is JsonObject jsonObject)
             {
                 int propertyCount = 0;
-                foreach (var property in jsonObject)
+                foreach (KeyValuePair<string, JsonNode?> property in jsonObject)
                 {
                     propertyCount++;
                     if (refMetadataFound)
@@ -427,16 +426,16 @@ namespace System.Text.Json
             return refMetadataFound;
         }
 
-        internal static void ValidateMetadataForObjectConverter(JsonConverter converter, ref Utf8JsonReader reader, ref ReadStack state)
+        internal static void ValidateMetadataForObjectConverter(ref ReadStack state)
         {
-            if (state.Current.MetadataPropertyNames.HasFlag(MetadataPropertyName.Values))
+            if ((state.Current.MetadataPropertyNames & MetadataPropertyName.Values) != 0)
             {
                 // Object converters do not support $values metadata.
                 ThrowHelper.ThrowJsonException_MetadataUnexpectedProperty(s_valuesPropertyName, ref state);
             }
         }
 
-        internal static void ValidateMetadataForArrayConverter(JsonConverter converter, ref Utf8JsonReader reader, ref ReadStack state)
+        internal static void ValidateMetadataForArrayConverter(JsonConverter converter, ref Utf8JsonReader reader, scoped ref ReadStack state)
         {
             switch (reader.TokenType)
             {
@@ -448,14 +447,14 @@ namespace System.Text.Json
                     if (state.Current.MetadataPropertyNames != MetadataPropertyName.Ref)
                     {
                         // Read the entire JSON object while parsing for metadata: for collection converters this is only legal for $ref nodes.
-                        ThrowHelper.ThrowJsonException_MetadataPreservedArrayValuesNotFound(ref state, converter.TypeToConvert);
+                        ThrowHelper.ThrowJsonException_MetadataPreservedArrayValuesNotFound(ref state, converter.Type!);
                     }
                     break;
 
                 default:
                     Debug.Assert(reader.TokenType == JsonTokenType.PropertyName);
                     // Do not tolerate non-metadata properties in collection converters.
-                    ThrowHelper.ThrowJsonException_MetadataInvalidPropertyInArrayMetadata(ref state, converter.TypeToConvert, reader);
+                    ThrowHelper.ThrowJsonException_MetadataInvalidPropertyInArrayMetadata(ref state, converter.Type!, reader);
                     break;
             }
         }

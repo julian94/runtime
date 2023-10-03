@@ -27,17 +27,19 @@ namespace System
 #pragma warning restore CA2249
         }
 
-        public bool Contains(char value) => SpanHelpers.Contains(ref _firstChar, value, Length);
+        public bool Contains(char value)
+            => SpanHelpers.ContainsValueType(ref Unsafe.As<char, short>(ref _firstChar), (short)value, Length);
 
         public bool Contains(char value, StringComparison comparisonType)
         {
+#pragma warning disable CA2249 // Consider using 'string.Contains' instead of 'string.IndexOf'... this is the implementation of Contains!
             return IndexOf(value, comparisonType) != -1;
+#pragma warning restore CA2249
         }
 
         // Returns the index of the first occurrence of a specified character in the current instance.
         // The search starts at startIndex and runs thorough the next count characters.
-        //
-        public int IndexOf(char value) => SpanHelpers.IndexOf(ref _firstChar, value, Length);
+        public int IndexOf(char value) => SpanHelpers.IndexOfChar(ref _firstChar, value, Length);
 
         public int IndexOf(char value, int startIndex)
         {
@@ -60,11 +62,30 @@ namespace System
                     return IndexOf(value);
 
                 case StringComparison.OrdinalIgnoreCase:
-                    return CompareInfo.Invariant.IndexOf(this, value, CompareOptions.OrdinalIgnoreCase);
+                    return IndexOfCharOrdinalIgnoreCase(value);
 
                 default:
                     throw new ArgumentException(SR.NotSupported_StringComparison, nameof(comparisonType));
             }
+        }
+
+        private int IndexOfCharOrdinalIgnoreCase(char value)
+        {
+            if (!char.IsAscii(value))
+            {
+                return Ordinal.IndexOfOrdinalIgnoreCase(this, new ReadOnlySpan<char>(in value));
+            }
+
+            if (char.IsAsciiLetter(value))
+            {
+                char valueUc = (char)(value | 0x20);
+                char valueLc = (char)(value & ~0x20);
+                return PackedSpanHelpers.PackedIndexOfIsSupported
+                    ? PackedSpanHelpers.IndexOfAny(ref _firstChar, valueLc, valueUc, Length)
+                    : SpanHelpers.IndexOfAnyChar(ref _firstChar, valueLc, valueUc, Length);
+            }
+
+            return SpanHelpers.IndexOfChar(ref _firstChar, value, Length);
         }
 
         public unsafe int IndexOf(char value, int startIndex, int count)
@@ -79,7 +100,7 @@ namespace System
                 ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.count, ExceptionResource.ArgumentOutOfRange_Count);
             }
 
-            int result = SpanHelpers.IndexOf(ref Unsafe.Add(ref _firstChar, startIndex), value, count);
+            int result = SpanHelpers.IndexOfChar(ref Unsafe.Add(ref _firstChar, startIndex), value, count);
 
             return result < 0 ? result : result + startIndex;
         }
@@ -263,8 +284,8 @@ namespace System
         // The search starts at startIndex and runs backwards to startIndex - count + 1.
         // The character at position startIndex is included in the search.  startIndex is the larger
         // index within the string.
-        //
-        public int LastIndexOf(char value) => SpanHelpers.LastIndexOf(ref _firstChar, value, Length);
+        public int LastIndexOf(char value)
+            => SpanHelpers.LastIndexOfValueType(ref Unsafe.As<char, short>(ref _firstChar), (short)value, Length);
 
         public int LastIndexOf(char value, int startIndex)
         {
@@ -289,7 +310,7 @@ namespace System
             }
 
             int startSearchAt = startIndex + 1 - count;
-            int result = SpanHelpers.LastIndexOf(ref Unsafe.Add(ref _firstChar, startSearchAt), value, count);
+            int result = SpanHelpers.LastIndexOfValueType(ref Unsafe.As<char, short>(ref Unsafe.Add(ref _firstChar, startSearchAt)), (short)value, count);
 
             return result < 0 ? result : result + startSearchAt;
         }

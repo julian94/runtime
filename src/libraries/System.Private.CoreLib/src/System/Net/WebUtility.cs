@@ -30,7 +30,7 @@ namespace System.Net
 
         #region HtmlEncode / HtmlDecode methods
 
-        [return: NotNullIfNotNull("value")]
+        [return: NotNullIfNotNull(nameof(value))]
         public static string? HtmlEncode(string? value)
         {
             if (string.IsNullOrEmpty(value))
@@ -175,7 +175,7 @@ namespace System.Net
             }
         }
 
-        [return: NotNullIfNotNull("value")]
+        [return: NotNullIfNotNull(nameof(value))]
         public static string? HtmlDecode(string? value)
         {
             if (string.IsNullOrEmpty(value))
@@ -185,7 +185,7 @@ namespace System.Net
 
             ReadOnlySpan<char> valueSpan = value.AsSpan();
 
-            int index = IndexOfHtmlDecodingChars(valueSpan);
+            int index = valueSpan.IndexOf('&');
             if (index < 0)
             {
                 return value;
@@ -215,7 +215,7 @@ namespace System.Net
 
             ReadOnlySpan<char> valueSpan = value.AsSpan();
 
-            int index = IndexOfHtmlDecodingChars(valueSpan);
+            int index = valueSpan.IndexOf('&');
             if (index == -1)
             {
                 output.Write(value);
@@ -387,7 +387,7 @@ namespace System.Net
 
         #region UrlEncode public methods
 
-        [return: NotNullIfNotNull("value")]
+        [return: NotNullIfNotNull(nameof(value))]
         public static string? UrlEncode(string? value)
         {
             if (string.IsNullOrEmpty(value))
@@ -439,7 +439,7 @@ namespace System.Net
             return Encoding.UTF8.GetString(newBytes);
         }
 
-        [return: NotNullIfNotNull("value")]
+        [return: NotNullIfNotNull(nameof(value))]
         public static byte[]? UrlEncodeToBytes(byte[]? value, int offset, int count)
         {
             if (!ValidateUrlEncodingParameters(value, offset, count))
@@ -479,7 +479,7 @@ namespace System.Net
 
         #region UrlDecode implementation
 
-        [return: NotNullIfNotNull("value")]
+        [return: NotNullIfNotNull(nameof(value))]
         private static string? UrlDecodeInternal(string? value, Encoding encoding)
         {
             if (string.IsNullOrEmpty(value))
@@ -542,7 +542,7 @@ namespace System.Net
             return helper.GetString();
         }
 
-        [return: NotNullIfNotNull("bytes")]
+        [return: NotNullIfNotNull(nameof(bytes))]
         private static byte[]? UrlDecodeInternal(byte[]? bytes, int offset, int count)
         {
             if (!ValidateUrlEncodingParameters(bytes, offset, count))
@@ -590,13 +590,13 @@ namespace System.Net
         #region UrlDecode public methods
 
 
-        [return: NotNullIfNotNull("encodedValue")]
+        [return: NotNullIfNotNull(nameof(encodedValue))]
         public static string? UrlDecode(string? encodedValue)
         {
             return UrlDecodeInternal(encodedValue, Encoding.UTF8);
         }
 
-        [return: NotNullIfNotNull("encodedValue")]
+        [return: NotNullIfNotNull(nameof(encodedValue))]
         public static byte[]? UrlDecodeToBytes(byte[]? encodedValue, int offset, int count)
         {
             return UrlDecodeInternal(encodedValue, offset, count);
@@ -688,32 +688,16 @@ namespace System.Net
         {
             if (bytes == null && count == 0)
                 return false;
+
             ArgumentNullException.ThrowIfNull(bytes);
-            if (offset < 0 || offset > bytes.Length)
-            {
-                throw new ArgumentOutOfRangeException(nameof(offset));
-            }
-            if (count < 0 || offset + count > bytes.Length)
-            {
-                throw new ArgumentOutOfRangeException(nameof(count));
-            }
+
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, bytes.Length);
+
+            ArgumentOutOfRangeException.ThrowIfNegative(count);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(count, bytes.Length - offset);
 
             return true;
-        }
-
-        private static int IndexOfHtmlDecodingChars(ReadOnlySpan<char> input)
-        {
-            // this string requires html decoding if it contains '&' or a surrogate character
-            for (int i = 0; i < input.Length; i++)
-            {
-                char c = input[i];
-                if (c == '&' || char.IsSurrogate(c))
-                {
-                    return i;
-                }
-            }
-
-            return -1;
         }
 
         #endregion
@@ -737,8 +721,7 @@ namespace System.Net
             private void FlushBytes()
             {
                 Debug.Assert(_numBytes > 0);
-                if (_charBuffer == null)
-                    _charBuffer = new char[_bufferSize];
+                _charBuffer ??= new char[_bufferSize];
 
                 _numChars += _encoding.GetChars(_byteBuffer!, 0, _numBytes, _charBuffer, _numChars);
                 _numBytes = 0;
@@ -761,16 +744,14 @@ namespace System.Net
                 if (_numBytes > 0)
                     FlushBytes();
 
-                if (_charBuffer == null)
-                    _charBuffer = new char[_bufferSize];
+                _charBuffer ??= new char[_bufferSize];
 
                 _charBuffer[_numChars++] = ch;
             }
 
             internal void AddByte(byte b)
             {
-                if (_byteBuffer == null)
-                    _byteBuffer = new byte[_bufferSize];
+                _byteBuffer ??= new byte[_bufferSize];
 
                 _byteBuffer[_numBytes++] = b;
             }

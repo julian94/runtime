@@ -81,7 +81,7 @@ bool NearDiffer::InitAsmDiff()
             return false;
         }
 
-        WCHAR* ptr = ::wcsrchr(coreCLRLoadedPath, '/');
+        WCHAR* ptr = (WCHAR*)u16_strrchr(coreCLRLoadedPath, '/');
 
         // Move past the / character.
         ptr = ptr + 1;
@@ -91,7 +91,7 @@ bool NearDiffer::InitAsmDiff()
         coreDisToolsLibrary = coreCLRLoadedPath;
 #endif // TARGET_UNIX
 
-        HMODULE hCoreDisToolsLib = ::LoadLibraryW(coreDisToolsLibrary);
+        HMODULE hCoreDisToolsLib = ::LoadLibraryExW(coreDisToolsLibrary, NULL, 0);
         if (hCoreDisToolsLib == 0)
         {
             LogError("LoadLibrary(%s) failed (0x%08x)", MAKEDLLNAME_A("coredistools"), ::GetLastError());
@@ -298,22 +298,24 @@ struct DiffData
     CompileResult* cr2;
 
     // Details of the first block
-    size_t blocksize1;
-    size_t datablock1;
-    size_t datablockSize1;
-    size_t originalBlock1;
-    size_t originalDataBlock1;
-    size_t otherCodeBlock1;
-    size_t otherCodeBlockSize1;
+    unsigned char* block1;
+    size_t         blocksize1;
+    unsigned char* datablock1;
+    size_t         datablockSize1;
+    size_t         originalBlock1;
+    size_t         originalDataBlock1;
+    size_t         otherCodeBlock1;
+    size_t         otherCodeBlockSize1;
 
     // Details of the second block
-    size_t blocksize2;
-    size_t datablock2;
-    size_t datablockSize2;
-    size_t originalBlock2;
-    size_t originalDataBlock2;
-    size_t otherCodeBlock2;
-    size_t otherCodeBlockSize2;
+    unsigned char* block2;
+    size_t         blocksize2;
+    unsigned char* datablock2;
+    size_t         datablockSize2;
+    size_t         originalBlock2;
+    size_t         originalDataBlock2;
+    size_t         otherCodeBlock2;
+    size_t         otherCodeBlockSize2;
 };
 
 //
@@ -330,6 +332,7 @@ bool NearDiffer::compareOffsets(
         return true;
     }
 
+    const SPMI_TARGET_ARCHITECTURE targetArch = GetSpmiTargetArchitecture();
     const DiffData* data         = (const DiffData*)payload;
     size_t          ip1          = data->originalBlock1 + blockOffset;
     size_t          ip2          = data->originalBlock2 + blockOffset;
@@ -435,6 +438,140 @@ bool NearDiffer::compareOffsets(
     if ((mapped1 == mapped2) && (mapped1 != (size_t)-1))
         return true;
 
+    // There are some cases on arm64 where we generate multiple instruction register construction of addresses
+    // but we don't have a relocation for them (so they aren't handled by `applyRelocs`). One case is
+    // allocPgoInstrumentationBySchema(), which returns an address the JIT writes into the code stream
+    // (used to store dynamic PGO probe data).
+    //
+    // The instruction sequence is something like this:
+    //     mov     x0, #63408
+    //     movk    x0, #23602, lsl #16
+    //     movk    x0, #606, lsl #32
+    //
+    // Here, we try to match this sequence and look it up in the address map.
+    //
+    // Since the mov/movk sequence is specific to the replay address constant, we don't assume the baseline
+    // and diff have the same number of instructions (e.g., it's possible to skip a `movk` if it is zero).
+    //
+    // Some version of this logic might apply to ARM as well.
+    //
+    if (targetArch == SPMI_TARGET_ARCHITECTURE_ARM64)
+    {
+        bool movk2_1 = false, movk3_1 = false;
+        bool movk2_2 = false, movk3_2 = false;
+
+        unsigned reg1_1 = 0, reg2_1, reg3_1, reg4_1;
+        unsigned reg1_2 = 0, reg2_2, reg3_2, reg4_2;
+        unsigned con1_1, con2_1, con3_1, con4_1;
+        unsigned con1_2, con2_2, con3_2, con4_2;
+        unsigned shift2_1, shift3_1, shift4_1;
+        unsigned shift2_2, shift3_2, shift4_2;
+
+        UINT32* iaddr1    = (UINT32*)(data->block1 + blockOffset);
+        UINT32* iaddr2    = (UINT32*)(data->block2 + blockOffset);
+        UINT32* iaddr1end = (UINT32*)(data->block1 + data->blocksize1);
+        UINT32* iaddr2end = (UINT32*)(data->block2 + data->blocksize2);
+
+        DWORDLONG addr1 = 0;
+        DWORDLONG addr2 = 0;
+
+        // Look for a mov/movk address pattern in code stream 1.
+
+        if ((iaddr1 < iaddr1end) &&
+            GetArm64MovConstant(iaddr1, &reg1_1, &con1_1))
+        {
+            // We assume the address requires at least 1 'movk' instruction.
+            if ((iaddr1 + 1 < iaddr1end) &&
+                GetArm64MovkConstant(iaddr1 + 1, &reg2_1, &con2_1, &shift2_1) &&
+                (reg1_1 == reg2_1))
+            {
+                addr1 = (DWORDLONG)con1_1 + ((DWORDLONG)con2_1 << shift2_1);
+
+                if ((iaddr1 + 2 < iaddr1end) &&
+                    GetArm64MovkConstant(iaddr1 + 2, &reg3_1, &con3_1, &shift3_1) &&
+                    (reg1_1 == reg3_1))
+                {
+                    movk2_1 = true;
+                    addr1 += (DWORDLONG)con3_1 << shift3_1;
+
+                    if ((iaddr1 + 3 < iaddr1end) &&
+                        GetArm64MovkConstant(iaddr1 + 3, &reg4_1, &con4_1, &shift4_1) &&
+                        (reg1_1 == reg4_1))
+                    {
+                        movk3_1 = true;
+                        addr1 += (DWORDLONG)con4_1 << shift4_1;
+                    }
+                }
+            }
+        }
+
+        // Look for a mov/movk address pattern in code stream 2.
+
+        if ((iaddr2 < iaddr2end) &&
+            GetArm64MovConstant(iaddr2, &reg1_2, &con1_2))
+        {
+            // We assume the address requires at least 1 'movk' instruction.
+            if ((iaddr2 + 1 < iaddr2end) &&
+                GetArm64MovkConstant(iaddr2 + 1, &reg2_2, &con2_2, &shift2_2) &&
+                (reg1_2 == reg2_2))
+            {
+                addr2 = (DWORDLONG)con1_2 + ((DWORDLONG)con2_2 << shift2_2);
+
+                if ((iaddr2 + 2 < iaddr2end) &&
+                    GetArm64MovkConstant(iaddr2 + 2, &reg3_2, &con3_2, &shift3_2) &&
+                    (reg1_2 == reg3_2))
+                {
+                    movk2_2 = true;
+                    addr2 += (DWORDLONG)con3_2 << shift3_2;
+
+                    if ((iaddr2 + 3 < iaddr2end) &&
+                        GetArm64MovkConstant(iaddr2 + 3, &reg4_2, &con4_2, &shift4_2) &&
+                        (reg1_2 == reg4_2))
+                    {
+                        movk3_2 = true;
+                        addr2 += (DWORDLONG)con4_2 << shift4_2;
+                    }
+                }
+            }
+        }
+
+        // Check the constants. We don't need to check 'addr1 == addr2' because if that were
+        // true we wouldn't have gotten here.
+        //
+        // Note: when replaying on a 32-bit platform, we must have
+        // movk2_1 == movk2_2 == movk3_1 == movk3_2 == false
+
+        if ((addr1 != 0) && (addr2 != 0) && (reg1_1 == reg1_2))
+        {
+            DWORDLONG mapped1 = (DWORDLONG)data->cr1->searchAddressMap((void*)addr1);
+            DWORDLONG mapped2 = (DWORDLONG)data->cr2->searchAddressMap((void*)addr2);
+            if ((mapped1 == mapped2) && (mapped1 != (DWORDLONG)-1))
+            {
+                // Now, zero out the constants in the `movk` instructions so when the disassembler
+                // gets to them, they compare equal.
+                PutArm64MovkConstant(iaddr1 + 1, 0);
+                PutArm64MovkConstant(iaddr2 + 1, 0);
+                if (movk2_1)
+                {
+                    PutArm64MovkConstant(iaddr1 + 2, 0);
+                }
+                if (movk2_2)
+                {
+                    PutArm64MovkConstant(iaddr2 + 2, 0);
+                }
+                if (movk3_1)
+                {
+                    PutArm64MovkConstant(iaddr1 + 3, 0);
+                }
+                if (movk3_2)
+                {
+                    PutArm64MovkConstant(iaddr2 + 3, 0);
+                }
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -513,11 +650,11 @@ bool NearDiffer::compareCodeSection(MethodContext* mc,
                      cr2,
 
                      // Details of the first block
-                     (size_t)blocksize1, (size_t)datablock1, (size_t)datablockSize1, (size_t)originalBlock1,
+                     block1, (size_t)blocksize1, datablock1, (size_t)datablockSize1, (size_t)originalBlock1,
                      (size_t)originalDataBlock1, (size_t)otherCodeBlock1, (size_t)otherCodeBlockSize1,
 
                      // Details of the second block
-                     (size_t)blocksize2, (size_t)datablock2, (size_t)datablockSize2, (size_t)originalBlock2,
+                     block2, (size_t)blocksize2, datablock2, (size_t)datablockSize2, (size_t)originalBlock2,
                      (size_t)originalDataBlock2, (size_t)otherCodeBlock2, (size_t)otherCodeBlockSize2};
 
 #ifdef USE_COREDISTOOLS
@@ -599,9 +736,9 @@ bool NearDiffer::compareCodeSection(MethodContext* mc,
         disasm_1->CchFormatInstr(instrMnemonic_1, 64);
         WCHAR instrMnemonic_2[64]; // I never know how much to allocate...
         disasm_2->CchFormatInstr(instrMnemonic_2, 64);
-        if (wcscmp(instrMnemonic_1, L"ret") == 0)
+        if (u16_strcmp(instrMnemonic_1, L"ret") == 0)
             haveSeenRet = true;
-        if (wcscmp(instrMnemonic_1, L"rep ret") == 0)
+        if (u16_strcmp(instrMnemonic_1, L"rep ret") == 0)
             haveSeenRet = true;
 
         // First, check to see if these instructions are actually identical.
@@ -1110,28 +1247,68 @@ bool NearDiffer::compare(MethodContext* mc, CompileResult* cr1, CompileResult* c
     // is a sum of their sizes. The following is to adjust their sizes and the roDataBlock_{1,2} pointers.
     if (GetSpmiTargetArchitecture() == SPMI_TARGET_ARCHITECTURE_ARM64)
     {
-        BYTE*        nativeEntry_1;
-        ULONG        nativeSizeOfCode_1;
-        CorJitResult jitResult_1;
+        if (hotCodeSize_1 > 0)
+        {
+            BYTE* nativeEntry_1;
+            ULONG        nativeSizeOfCode_1;
+            CorJitResult jitResult_1;
+            cr1->repCompileMethod(&nativeEntry_1, &nativeSizeOfCode_1, &jitResult_1);
+            roDataSize_1 = hotCodeSize_1 - nativeSizeOfCode_1;
+            roDataBlock_1 = hotCodeBlock_1 + nativeSizeOfCode_1;
+            orig_roDataBlock_1 = (void*)((size_t)orig_hotCodeBlock_1 + nativeSizeOfCode_1);
+            hotCodeSize_1 = nativeSizeOfCode_1;
+        }
 
-        BYTE*        nativeEntry_2;
-        ULONG        nativeSizeOfCode_2;
-        CorJitResult jitResult_2;
+        if (hotCodeSize_2 > 0)
+        {
+            BYTE* nativeEntry_2;
+            ULONG        nativeSizeOfCode_2;
+            CorJitResult jitResult_2;
+            cr2->repCompileMethod(&nativeEntry_2, &nativeSizeOfCode_2, &jitResult_2);
+            roDataSize_2 = hotCodeSize_2 - nativeSizeOfCode_2;
+            roDataBlock_2 = hotCodeBlock_2 + nativeSizeOfCode_2;
+            orig_roDataBlock_2 = (void*)((size_t)orig_hotCodeBlock_2 + nativeSizeOfCode_2);
+            hotCodeSize_2 = nativeSizeOfCode_2;
+        }
 
-        cr1->repCompileMethod(&nativeEntry_1, &nativeSizeOfCode_1, &jitResult_1);
-        cr2->repCompileMethod(&nativeEntry_2, &nativeSizeOfCode_2, &jitResult_2);
+        auto rewriteUnsupportedInstrs = [](unsigned char* bytes, size_t numBytes) {
+            for (size_t i = 0; i < numBytes; i += 4)
+            {
+                uint32_t inst;
+                memcpy(&inst, &bytes[i], 4);
 
-        roDataSize_1 = hotCodeSize_1 - nativeSizeOfCode_1;
-        roDataSize_2 = hotCodeSize_2 - nativeSizeOfCode_2;
+                const uint32_t ldapurMask = 0b00111111111000000000110000000000;
+                const uint32_t ldapurBits = 0b00011001010000000000000000000000;
+                const uint32_t ldurBits   = 0b00111000010000000000000000000000;
 
-        roDataBlock_1 = hotCodeBlock_1 + nativeSizeOfCode_1;
-        roDataBlock_2 = hotCodeBlock_2 + nativeSizeOfCode_2;
+                const uint32_t stlurMask  = 0b00111111111000000000110000000000;
+                const uint32_t stlurBits  = 0b00011001000000000000000000000000;
+                const uint32_t sturBits   = 0b00111000000000000000000000000000;
+                if ((inst & ldapurMask) == ldapurBits)
+                {
+                    inst ^= (ldapurBits ^ ldurBits);
+                    memcpy(&bytes[i], &inst, 4);
+                }
+                else if ((inst & stlurMask) == stlurBits)
+                {
+                    inst ^= (stlurBits ^ sturBits);
+                    memcpy(&bytes[i], &inst, 4);
+                }
+            }
+            };
 
-        orig_roDataBlock_1 = (void*)((size_t)orig_hotCodeBlock_1 + nativeSizeOfCode_1);
-        orig_roDataBlock_2 = (void*)((size_t)orig_hotCodeBlock_2 + nativeSizeOfCode_2);
-
-        hotCodeSize_1 = nativeSizeOfCode_1;
-        hotCodeSize_2 = nativeSizeOfCode_2;
+        // As of 2023-09-13, our coredistools does not support stlur/ldapur
+        // instructions, so we rewrite them into supported stur/ldur
+        // instructions before passing them to the near differ. This means we
+        // will miss diffs when changing stlur<->stur and ldapur<->ldur,
+        // but this is better than the decode failure that otherwise results
+        // (which shows up as a zero-sized diff unconditionally).
+        // This code should be removed once a new coredistools is compiled that
+        // supports new instructions.
+        rewriteUnsupportedInstrs(hotCodeBlock_1, hotCodeSize_1);
+        rewriteUnsupportedInstrs(coldCodeBlock_1, coldCodeSize_1);
+        rewriteUnsupportedInstrs(hotCodeBlock_2, hotCodeSize_2);
+        rewriteUnsupportedInstrs(coldCodeBlock_2, coldCodeSize_2);
     }
 
     LogDebug("HCS1 %d CCS1 %d RDS1 %d xcpnt1 %d flag1 %08X, HCB %p CCB %p RDB %p ohcb %p occb %p odb %p", hotCodeSize_1,

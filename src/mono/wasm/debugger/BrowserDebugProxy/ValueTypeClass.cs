@@ -11,25 +11,26 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.WebAssembly.Diagnostics;
 using Newtonsoft.Json.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace BrowserDebugProxy
 {
     internal sealed class ValueTypeClass
     {
-        private readonly bool autoExpand;
+        private bool autoExpand;
         private JArray proxy;
         private GetMembersResult _combinedResult;
         private bool propertiesExpanded;
         private bool fieldsExpanded;
-        private string className;
+        private readonly string className;
         private JArray fields;
-
+        public List<JObject> InlineArray { get; init; }
         public DotnetObjectId Id { get; init; }
         public byte[] Buffer { get; init; }
         public int TypeId { get; init; }
         public bool IsEnum { get; init; }
 
-        public ValueTypeClass(byte[] buffer, string className, JArray fields, int typeId, bool isEnum)
+        public ValueTypeClass(byte[] buffer, string className, JArray fields, int typeId, bool isEnum, List<JObject> inlineArray = null)
         {
             var valueTypeId = MonoSDBHelper.GetNewObjectId();
             var objectId = new DotnetObjectId("valuetype", valueTypeId);
@@ -41,6 +42,7 @@ namespace BrowserDebugProxy
             autoExpand = ShouldAutoExpand(className);
             Id = objectId;
             IsEnum = isEnum;
+            InlineArray = inlineArray;
         }
 
         public override string ToString() => $"{{ ValueTypeClass: typeId: {TypeId}, Id: {Id}, Id: {Id}, fields: {fields} }}";
@@ -51,8 +53,9 @@ namespace BrowserDebugProxy
                                                 long initialPos,
                                                 string className,
                                                 int typeId,
-                                                int numValues,
                                                 bool isEnum,
+                                                bool includeStatic,
+                                                int inlineArraySize,
                                                 CancellationToken token)
         {
             var typeInfo = await sdbAgent.GetTypeInfo(typeId, token);
@@ -60,41 +63,66 @@ namespace BrowserDebugProxy
             var typePropertiesBrowsableInfo = typeInfo?.Info?.DebuggerBrowsableProperties;
 
             IReadOnlyList<FieldTypeClass> fieldTypes = await sdbAgent.GetTypeFields(typeId, token);
-            // statics should not be in valueType fields: CallFunctionOnTests.PropertyGettersTest
+
+            JArray fields = new();
+            List<JObject> inlineArray = null;
+            JObject lastWritableFieldValue = null;
+            if (includeStatic)
+            {
+                IEnumerable<FieldTypeClass> staticFields =
+                    fieldTypes.Where(f => f.Attributes.HasFlag(FieldAttributes.Static));
+                foreach (var field in staticFields)
+                {
+                    var fieldValue = await sdbAgent.GetFieldValue(typeId, field.Id, token);
+                    fields.Add(GetFieldWithMetadata(field, fieldValue, isStatic: true));
+                }
+            }
+
             IEnumerable<FieldTypeClass> writableFields = fieldTypes
                 .Where(f => !f.Attributes.HasFlag(FieldAttributes.Literal)
                     && !f.Attributes.HasFlag(FieldAttributes.Static));
-
-            JArray fields = new();
             foreach (var field in writableFields)
             {
-                var fieldValue = await sdbAgent.ValueCreator.ReadAsVariableValue(cmdReader, field.Name, token, true, field.TypeId, false);
-
-                fieldValue["__section"] = field.Attributes switch
-                {
-                    FieldAttributes.Private => "private",
-                    FieldAttributes.Public => "result",
-                    _ => "internal"
-                };
-
-                if (field.IsBackingField)
-                    fieldValue["__isBackingField"] = true;
-                else
-                {
-                    typeFieldsBrowsableInfo.TryGetValue(field.Name, out DebuggerBrowsableState? state);
-                    fieldValue["__state"] = state?.ToString();
-                }
-
-                fields.Add(fieldValue);
+                lastWritableFieldValue = await sdbAgent.ValueCreator.ReadAsVariableValue(cmdReader, field.Name, token, isOwn: true, field.TypeId, forDebuggerDisplayAttribute: false);
+                fields.Add(GetFieldWithMetadata(field, lastWritableFieldValue, isStatic: false));
             }
-
+            if (inlineArraySize > 0)
+            {
+                inlineArray = new(inlineArraySize+1);
+                inlineArray.Add(lastWritableFieldValue);
+                var firstFieldtypeId = writableFields.First().TypeId;
+                for (int i = 1; i < inlineArraySize; i++)
+                {
+                    //the valuetype has a single instance field in inline-arrays
+                    var inlineArrayItem = await sdbAgent.ValueCreator.ReadAsVariableValue(cmdReader, $"{i}", token, isOwn: true, firstFieldtypeId, forDebuggerDisplayAttribute: false);
+                    inlineArray.Add(inlineArrayItem);
+                }
+            }
             long endPos = cmdReader.BaseStream.Position;
             cmdReader.BaseStream.Position = initialPos;
             byte[] valueTypeBuffer = new byte[endPos - initialPos];
             cmdReader.Read(valueTypeBuffer, 0, (int)(endPos - initialPos));
             cmdReader.BaseStream.Position = endPos;
 
-            return new ValueTypeClass(valueTypeBuffer, className, fields, typeId, isEnum);
+            return new ValueTypeClass(valueTypeBuffer, className, fields, typeId, isEnum, inlineArray);
+
+            JObject GetFieldWithMetadata(FieldTypeClass field, JObject fieldValue, bool isStatic)
+            {
+                // GetFieldValue returns JObject without name and we need this information
+                if (isStatic)
+                    fieldValue["name"] = field.Name;
+                FieldAttributes attr = field.Attributes & FieldAttributes.FieldAccessMask;
+                fieldValue[InternalUseFieldName.Section.Name] = attr == FieldAttributes.Private ? "private" : "result";
+
+                if (field.IsBackingField)
+                {
+                    fieldValue[InternalUseFieldName.IsBackingField.Name] = true;
+                    return fieldValue;
+                }
+                typeFieldsBrowsableInfo.TryGetValue(field.Name, out DebuggerBrowsableState? state);
+                fieldValue[InternalUseFieldName.State.Name] = state?.ToString();
+                return fieldValue;
+            }
         }
 
         public async Task<JObject> ToJObject(MonoSDBHelper sdbAgent, bool forDebuggerDisplayAttribute, CancellationToken token)
@@ -102,9 +130,11 @@ namespace BrowserDebugProxy
             string description = className;
             if (ShouldAutoInvokeToString(className) || IsEnum)
             {
-                int methodId = await sdbAgent.GetMethodIdByName(TypeId, "ToString", token);
-                var retMethod = await sdbAgent.InvokeMethod(Buffer, methodId, token, "methodRet");
-                description = retMethod["value"]?["value"].Value<string>();
+                var toString = await sdbAgent.InvokeToStringAsync(new int[]{ TypeId }, isValueType: true, IsEnum, Id.Value, IsEnum ? BindingFlags.Default : BindingFlags.DeclaredOnly, invokeToStringInObject: false, token);
+                if (toString == null)
+                    sdbAgent.logger.LogDebug($"Error while evaluating ToString method on typeId = {TypeId}");
+                else
+                    description = toString;
                 if (className.Equals("System.Guid"))
                     description = description.ToUpperInvariant(); //to keep the old behavior
             }
@@ -112,7 +142,15 @@ namespace BrowserDebugProxy
             {
                 string displayString = await sdbAgent.GetValueFromDebuggerDisplayAttribute(Id, TypeId, token);
                 if (displayString != null)
+                {
                     description = displayString;
+                }
+                else
+                {
+                    var toString = await sdbAgent.InvokeToStringAsync(new int[]{ TypeId }, isValueType: true, IsEnum, Id.Value, IsEnum ? BindingFlags.Default : BindingFlags.DeclaredOnly, invokeToStringInObject: false, token);
+                    if (toString != null)
+                        description = toString;
+                }
             }
             return JObjectValueCreator.Create(
                 IsEnum ? fields[0]["value"] : null,
@@ -177,6 +215,8 @@ namespace BrowserDebugProxy
         public async Task<GetMembersResult> GetMemberValues(
             MonoSDBHelper sdbHelper, GetObjectCommandOptions getObjectOptions, bool sortByAccessLevel, bool includeStatic, CancellationToken token)
         {
+            if (getObjectOptions.HasFlag(GetObjectCommandOptions.AutoExpandable) && !getObjectOptions.HasFlag(GetObjectCommandOptions.AccessorPropertiesOnly))
+                autoExpand = true;
             // 1
             if (!propertiesExpanded)
             {
@@ -189,9 +229,7 @@ namespace BrowserDebugProxy
             if (!getObjectOptions.HasFlag(GetObjectCommandOptions.ForDebuggerDisplayAttribute))
             {
                 // FIXME: cache?
-                result = await sdbHelper.GetValuesFromDebuggerProxyAttribute(Id.Value, TypeId, token);
-                if (result != null)
-                    Console.WriteLine($"Investigate GetValuesFromDebuggerProxyAttribute\n{result}. There was a change of logic from loop to one iteration");
+                result = await sdbHelper.GetValuesFromDebuggerProxyAttributeForValueTypes(Id.Value, TypeId, token);
             }
 
             if (result == null && getObjectOptions.HasFlag(GetObjectCommandOptions.AccessorPropertiesOnly))
@@ -200,14 +238,10 @@ namespace BrowserDebugProxy
                 result = _combinedResult.Clone();
                 RemovePropertiesFrom(result.Result);
                 RemovePropertiesFrom(result.PrivateMembers);
-                RemovePropertiesFrom(result.OtherMembers);
             }
 
-            if (result == null)
-            {
-                // 4 - fields + properties
-                result = _combinedResult.Clone();
-            }
+            // 4 - fields + properties
+            result ??= _combinedResult.Clone();
 
             return result;
 
@@ -232,7 +266,7 @@ namespace BrowserDebugProxy
             JArray visibleFields = new();
             foreach (JObject field in fields)
             {
-                if (!Enum.TryParse(field["__state"]?.Value<string>(), out DebuggerBrowsableState state))
+                if (!Enum.TryParse(field[InternalUseFieldName.State.Name]?.Value<string>(), out DebuggerBrowsableState state))
                 {
                     visibleFields.Add(field);
                     continue;
@@ -275,7 +309,7 @@ namespace BrowserDebugProxy
                     typeId,
                     className,
                     Buffer,
-                    autoExpand,
+                    autoExpand ? GetObjectCommandOptions.AutoExpandable : GetObjectCommandOptions.None,
                     Id,
                     isValueType: true,
                     isOwn: i == 0,

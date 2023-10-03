@@ -33,6 +33,7 @@ namespace System.Globalization
     {
         private bool IcuLoadCalendarDataFromSystem(string localeName, CalendarId calendarId)
         {
+            // ToDo: think if not to convert this function with multiple calls to JS into one call with multiple data requested at once
             Debug.Assert(!GlobalizationMode.UseNls);
 
             bool result = true;
@@ -79,15 +80,6 @@ namespace System.Globalization
             result &= EnumEraNames(localeName, calendarId, CalendarDataType.AbbrevEraNames, out this.saAbbrevEraNames!);
 
             return result;
-        }
-
-        internal static int IcuGetTwoDigitYearMax()
-        {
-            Debug.Assert(!GlobalizationMode.UseNls);
-
-            // There is no user override for this value on Linux or in ICU.
-            // So just return -1 to use the hard-coded defaults.
-            return -1;
         }
 
         // Call native side to figure out which calendars are allowed
@@ -436,13 +428,15 @@ namespace System.Globalization
             try
             {
                 ReadOnlySpan<char> calendarStringSpan = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(calendarStringPtr);
-                ref IcuEnumCalendarsData callbackContext = ref Unsafe.As<byte, IcuEnumCalendarsData>(ref *(byte*)context);
+#pragma warning disable 8500
+                IcuEnumCalendarsData* callbackContext = (IcuEnumCalendarsData*)context;
+#pragma warning restore 8500
 
-                if (callbackContext.DisallowDuplicates)
+                if (callbackContext->DisallowDuplicates)
                 {
-                    foreach (string existingResult in callbackContext.Results)
+                    foreach (string existingResult in callbackContext->Results)
                     {
-                        if (string.CompareOrdinal(calendarStringSpan, existingResult) == 0)
+                        if (calendarStringSpan.SequenceEqual(existingResult))
                         {
                             // the value is already in the results, so don't add it again
                             return;
@@ -450,7 +444,7 @@ namespace System.Globalization
                     }
                 }
 
-                callbackContext.Results.Add(calendarStringSpan.ToString());
+                callbackContext->Results.Add(calendarStringSpan.ToString());
             }
             catch (Exception e)
             {

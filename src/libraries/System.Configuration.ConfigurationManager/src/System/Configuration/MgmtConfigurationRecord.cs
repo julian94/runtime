@@ -42,16 +42,16 @@ namespace System.Configuration
 
         protected override SimpleBitVector32 ClassFlags => s_mgmtClassFlags;
 
-        private Hashtable SectionGroups => _sectionGroups ?? (_sectionGroups = new Hashtable());
+        private Hashtable SectionGroups => _sectionGroups ??= new Hashtable();
 
-        private Hashtable RemovedSections => _removedSections ?? (_removedSections = new Hashtable());
+        private Hashtable RemovedSections => _removedSections ??= new Hashtable();
 
-        private Hashtable RemovedSectionGroups => _removedSectionGroups ?? (_removedSectionGroups = new Hashtable());
+        private Hashtable RemovedSectionGroups => _removedSectionGroups ??= new Hashtable();
 
-        internal Hashtable SectionFactories => _sectionFactories ?? (_sectionFactories = GetAllFactories(false));
+        internal Hashtable SectionFactories => _sectionFactories ??= GetAllFactories(false);
 
         internal Hashtable SectionGroupFactories
-            => _sectionGroupFactories ?? (_sectionGroupFactories = GetAllFactories(true));
+            => _sectionGroupFactories ??= GetAllFactories(true);
 
         internal string ConfigurationFilePath => UpdateConfigHost.GetNewStreamname(ConfigStreamInfo.StreamName) ?? string.Empty;
 
@@ -299,7 +299,7 @@ namespace System.Configuration
         // Record all location tags in the config file, even if they are empty.
         protected override void AddLocation(string locationSubPath)
         {
-            if (_locationTags == null) _locationTags = new Hashtable(StringComparer.OrdinalIgnoreCase);
+            _locationTags ??= new Hashtable(StringComparer.OrdinalIgnoreCase);
 
             _locationTags[locationSubPath] = locationSubPath;
         }
@@ -555,7 +555,7 @@ namespace System.Configuration
             if (newConfigSourceStreamName != null)
             {
                 // Ensure that no parent is using the same config source stream
-                ValidateUniqueChildConfigSource(sectionInformation.ConfigKey, newConfigSourceStreamName, newConfigSource,
+                ValidateUniqueChildConfigSource(newConfigSourceStreamName, newConfigSource,
                     null);
 
                 StreamInfo streamInfo = (StreamInfo)_streamInfoUpdates[newConfigSourceStreamName];
@@ -923,7 +923,7 @@ namespace System.Configuration
                 //
                 if (RemovedSectionGroups.Contains(descendent.ConfigKey)) continue;
 
-                // If the section group has been evaluated, detatch it.
+                // If the section group has been evaluated, detach it.
                 ConfigurationSectionGroup sectionGroup = LookupSectionGroup(descendent.ConfigKey);
                 sectionGroup?.DetachFromConfigurationRecord();
 
@@ -1710,7 +1710,7 @@ namespace System.Configuration
 
                     if (addToConfigSourceUpdates)
                     {
-                        if (configSourceUpdates == null) configSourceUpdates = new ArrayList();
+                        configSourceUpdates ??= new ArrayList();
                         configSourceUpdates.Add(definitionUpdate);
                     }
                 }
@@ -1842,7 +1842,7 @@ namespace System.Configuration
                                 SectionXmlInfo sectionXmlInfo = new SectionXmlInfo(
                                     sectionRecord.ConfigKey, definitionConfigPath, _configPath, _locationSubPath,
                                     ConfigStreamInfo.StreamName, 0, ConfigStreamInfo.StreamVersion, null,
-                                    configSource, configSourceStreamName, configSourceStreamVersion,
+                                    configSource, configSourceStreamName,
                                     configSection.SectionInformation.ProtectionProviderName,
                                     configSection.SectionInformation.OverrideModeSetting,
                                     !configSection.SectionInformation.InheritInChildApplications);
@@ -2148,7 +2148,7 @@ namespace System.Configuration
         private static void CheckPreamble(byte[] preamble, XmlUtilWriter utilWriter, byte[] buffer)
         {
             bool hasByteOrderMark = false;
-            using (Stream preambleStream = new MemoryStream(buffer))
+            using (var preambleStream = new MemoryStream(buffer))
             {
                 byte[] streamStart = new byte[preamble.Length];
                 if (preambleStream.Read(streamStart, 0, streamStart.Length) == streamStart.Length)
@@ -2368,7 +2368,7 @@ namespace System.Configuration
             }
         }
 
-        private bool CopyConfigDeclarationsRecursive(
+        private static bool CopyConfigDeclarationsRecursive(
             SectionUpdates declarationUpdates, XmlUtil xmlUtil, XmlUtilWriter utilWriter, string group,
             int parentLinePosition, int parentIndent)
         {

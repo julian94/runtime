@@ -17,11 +17,12 @@ namespace ILCompiler.DependencyAnalysis
 
         public InterfaceDispatchMapNode(NodeFactory factory, TypeDesc type)
         {
-            // Multidimensional arrays should not get a sealed vtable or a dispatch map. Runtime should use the 
+            // Multidimensional arrays should not get a sealed vtable or a dispatch map. Runtime should use the
             // sealed vtable and dispatch map of the System.Array basetype instead.
             // Pointer arrays also follow the same path
             Debug.Assert(!type.IsArrayTypeWithoutGenericInterfaces());
             Debug.Assert(MightHaveInterfaceDispatchMap(type, factory));
+            Debug.Assert(type.ConvertToCanonForm(CanonicalFormKind.Specific) == type);
 
             _type = type;
         }
@@ -38,21 +39,17 @@ namespace ILCompiler.DependencyAnalysis
 
         public override bool StaticDependenciesAreComputed => true;
 
-        public override ObjectNodeSection Section
+        public override ObjectNodeSection GetSection(NodeFactory factory)
         {
-            get
-            {
-                if (_type.Context.Target.IsWindows)
-                    return ObjectNodeSection.FoldableReadOnlyDataSection;
-                else
-                    return ObjectNodeSection.DataSection;
-            }
+            if (factory.Target.IsWindows)
+                return ObjectNodeSection.FoldableReadOnlyDataSection;
+            else
+                return ObjectNodeSection.DataSection;
         }
-        
+
         protected override DependencyList ComputeNonRelocationBasedDependencies(NodeFactory factory)
         {
             var result = new DependencyList();
-            result.Add(factory.InterfaceDispatchMapIndirection(_type), "Interface dispatch map indirection node");
 
             // VTable slots of implemented interfaces are consulted during emission
             foreach (TypeDesc runtimeInterface in _type.RuntimeInterfaces)
@@ -76,7 +73,7 @@ namespace ILCompiler.DependencyAnalysis
             if (!type.IsArray && !type.IsDefType)
                 return false;
 
-            // Interfaces don't have a dispatch map because we dispatch them based on the
+            // Interfaces don't have a dispatch map for instance methods because we dispatch them based on the
             // dispatch map of the implementing class.
             // The only exception are IDynamicInterfaceCastable scenarios that dispatch
             // using the interface dispatch map.
@@ -86,10 +83,11 @@ namespace ILCompiler.DependencyAnalysis
             // wasn't marked as [DynamicInterfaceCastableImplementation]" and "we couldn't find an
             // implementation". We don't want to use the custom attribute for that at runtime because
             // that's reflection and this should work without reflection.
-            if (type.IsInterface)
-                return ((MetadataType)type).IsDynamicInterfaceCastableImplementation();
+            bool isInterface = type.IsInterface;
+            if (isInterface && ((MetadataType)type).IsDynamicInterfaceCastableImplementation())
+                return true;
 
-            TypeDesc declType = type.GetClosestDefType();
+            DefType declType = type.GetClosestDefType();
 
             for (int interfaceIndex = 0; interfaceIndex < declType.RuntimeInterfaces.Length; interfaceIndex++)
             {
@@ -111,18 +109,21 @@ namespace ILCompiler.DependencyAnalysis
 
                 foreach (MethodDesc slotMethod in slots)
                 {
-                    // Static interface methods don't go in the dispatch map
-                    if (slotMethod.Signature.IsStatic)
-                        continue;
-
                     MethodDesc declMethod = slotMethod;
 
-                    Debug.Assert(!declMethod.Signature.IsStatic && declMethod.IsVirtual);
+                    Debug.Assert(declMethod.IsVirtual);
+
+                    // Only static methods get placed in dispatch maps of interface types (modulo
+                    // IDynamicInterfaceCastable we already handled above).
+                    if (isInterface && !declMethod.Signature.IsStatic)
+                        continue;
 
                     if (interfaceOnDefinitionType != null)
                         declMethod = factory.TypeSystemContext.GetMethodForInstantiatedType(declMethod.GetTypicalMethodDefinition(), interfaceOnDefinitionType);
 
-                    var implMethod = declType.GetTypeDefinition().ResolveInterfaceMethodToVirtualMethodOnType(declMethod);
+                    var implMethod = declMethod.Signature.IsStatic ?
+                        declType.GetTypeDefinition().ResolveInterfaceMethodToStaticVirtualMethodOnType(declMethod) :
+                        declType.GetTypeDefinition().ResolveInterfaceMethodToVirtualMethodOnType(declMethod);
                     if (implMethod != null)
                     {
                         return true;
@@ -139,13 +140,15 @@ namespace ILCompiler.DependencyAnalysis
             return false;
         }
 
-        void EmitDispatchMap(ref ObjectDataBuilder builder, NodeFactory factory)
+        private void EmitDispatchMap(ref ObjectDataBuilder builder, NodeFactory factory)
         {
             var entryCountReservation = builder.ReserveShort();
             var defaultEntryCountReservation = builder.ReserveShort();
+            var staticEntryCountReservation = builder.ReserveShort();
+            var defaultStaticEntryCountReservation = builder.ReserveShort();
             int entryCount = 0;
 
-            TypeDesc declType = _type.GetClosestDefType();
+            DefType declType = _type.GetClosestDefType();
             TypeDesc declTypeDefinition = declType.GetTypeDefinition();
             DefType[] declTypeRuntimeInterfaces = declType.RuntimeInterfaces;
             DefType[] declTypeDefinitionRuntimeInterfaces = declTypeDefinition.RuntimeInterfaces;
@@ -154,8 +157,14 @@ namespace ILCompiler.DependencyAnalysis
             Debug.Assert(declTypeRuntimeInterfaces.Length == declTypeDefinitionRuntimeInterfaces.Length);
 
             var defaultImplementations = new List<(int InterfaceIndex, int InterfaceMethodSlot, int ImplMethodSlot)>();
+            var staticImplementations = new List<(int InterfaceIndex, int InterfaceMethodSlot, int ImplMethodSlot, int Context)>();
+            var staticDefaultImplementations = new List<(int InterfaceIndex, int InterfaceMethodSlot, int ImplMethodSlot, int Context)>();
 
-            // Resolve all the interfaces, but only emit non-default implementations
+            bool isInterface = declType.IsInterface;
+            bool needsEntriesForInstanceInterfaceMethodImpls = !isInterface
+                    || ((MetadataType)declType).IsDynamicInterfaceCastableImplementation();
+
+            // Resolve all the interfaces, but only emit non-static and non-default implementations
             for (int interfaceIndex = 0; interfaceIndex < declTypeRuntimeInterfaces.Length; interfaceIndex++)
             {
                 var interfaceType = declTypeRuntimeInterfaces[interfaceIndex];
@@ -163,14 +172,20 @@ namespace ILCompiler.DependencyAnalysis
                 Debug.Assert(interfaceType.IsInterface);
 
                 IReadOnlyList<MethodDesc> virtualSlots = factory.VTable(interfaceType).Slots;
-                
+
                 for (int interfaceMethodSlot = 0; interfaceMethodSlot < virtualSlots.Count; interfaceMethodSlot++)
                 {
                     MethodDesc declMethod = virtualSlots[interfaceMethodSlot];
+
+                    if (!declMethod.Signature.IsStatic && !needsEntriesForInstanceInterfaceMethodImpls)
+                        continue;
+
                     if(!interfaceType.IsTypeDefinition)
                         declMethod = factory.TypeSystemContext.GetMethodForInstantiatedType(declMethod.GetTypicalMethodDefinition(), (InstantiatedType)interfaceDefinitionType);
 
-                    var implMethod = declTypeDefinition.ResolveInterfaceMethodToVirtualMethodOnType(declMethod);
+                    var implMethod = declMethod.Signature.IsStatic ?
+                        declTypeDefinition.ResolveInterfaceMethodToStaticVirtualMethodOnType(declMethod) :
+                        declTypeDefinition.ResolveInterfaceMethodToVirtualMethodOnType(declMethod);
 
                     // Interface methods first implemented by a base type in the hierarchy will return null for the implMethod (runtime interface
                     // dispatch will walk the inheritance chain).
@@ -184,10 +199,26 @@ namespace ILCompiler.DependencyAnalysis
                         if (!implType.IsTypeDefinition)
                             targetMethod = factory.TypeSystemContext.GetMethodForInstantiatedType(implMethod.GetTypicalMethodDefinition(), (InstantiatedType)implType);
 
-                        builder.EmitShort((short)checked((ushort)interfaceIndex));
-                        builder.EmitShort((short)checked((ushort)(interfaceMethodSlot + (interfaceType.HasGenericDictionarySlot() ? 1 : 0))));
-                        builder.EmitShort((short)checked((ushort)VirtualMethodSlotHelper.GetVirtualMethodSlot(factory, targetMethod, declType)));
-                        entryCount++;
+                        int emittedInterfaceSlot = interfaceMethodSlot + (interfaceType.HasGenericDictionarySlot() ? 1 : 0);
+                        int emittedImplSlot = VirtualMethodSlotHelper.GetVirtualMethodSlot(factory, targetMethod, declType);
+                        if (targetMethod.Signature.IsStatic)
+                        {
+                            // If this is a static virtual, also remember whether we need generic context.
+                            // The implementation is not callable without the generic context.
+                            // Instance methods acquire the generic context from `this` and don't need it.
+                            // The pointer to the generic context is stored in the owning type's vtable.
+                            int genericContext = targetMethod.GetCanonMethodTarget(CanonicalFormKind.Specific).RequiresInstArg()
+                                ? StaticVirtualMethodContextSource.ContextFromThisClass
+                                : StaticVirtualMethodContextSource.None;
+                            staticImplementations.Add((interfaceIndex, emittedInterfaceSlot, emittedImplSlot, genericContext));
+                        }
+                        else
+                        {
+                            builder.EmitShort((short)checked((ushort)interfaceIndex));
+                            builder.EmitShort((short)checked((ushort)emittedInterfaceSlot));
+                            builder.EmitShort((short)checked((ushort)emittedImplSlot));
+                            entryCount++;
+                        }
                     }
                     else
                     {
@@ -196,9 +227,10 @@ namespace ILCompiler.DependencyAnalysis
                         int? implSlot = null;
 
                         DefaultInterfaceMethodResolution result = declTypeDefinition.ResolveInterfaceMethodToDefaultImplementationOnType(declMethod, out implMethod);
+                        DefType providingInterfaceDefinitionType = null;
                         if (result == DefaultInterfaceMethodResolution.DefaultImplementation)
                         {
-                            DefType providingInterfaceDefinitionType = (DefType)implMethod.OwningType;
+                            providingInterfaceDefinitionType = (DefType)implMethod.OwningType;
                             implMethod = implMethod.InstantiateSignature(declType.Instantiation, Instantiation.Empty);
                             implSlot = VirtualMethodSlotHelper.GetDefaultInterfaceMethodSlot(factory, implMethod, declType, providingInterfaceDefinitionType);
                         }
@@ -213,10 +245,44 @@ namespace ILCompiler.DependencyAnalysis
 
                         if (implSlot.HasValue)
                         {
-                            defaultImplementations.Add((
-                                interfaceIndex, 
-                                interfaceMethodSlot + (interfaceType.HasGenericDictionarySlot() ? 1 : 0),
-                                implSlot.Value));
+                            int emittedInterfaceSlot = interfaceMethodSlot + (interfaceType.HasGenericDictionarySlot() ? 1 : 0);
+                            if (declMethod.Signature.IsStatic)
+                            {
+                                int genericContext = StaticVirtualMethodContextSource.None;
+                                if (result == DefaultInterfaceMethodResolution.DefaultImplementation &&
+                                    implMethod.GetCanonMethodTarget(CanonicalFormKind.Specific).RequiresInstArg())
+                                {
+                                    // If this is a static virtual, also remember whether we need generic context.
+                                    // The implementation is not callable without the generic context.
+                                    // Instance methods acquire the generic context from `this` and don't need it.
+                                    // For default interface methods, the generic context is acquired by indexing
+                                    // into the interface list of the owning type.
+                                    Debug.Assert(providingInterfaceDefinitionType != null);
+                                    if (declTypeDefinition.HasSameTypeDefinition(providingInterfaceDefinitionType) &&
+                                        providingInterfaceDefinitionType == declTypeDefinition.InstantiateAsOpen())
+                                    {
+                                        genericContext = StaticVirtualMethodContextSource.ContextFromThisClass;
+                                    }
+                                    else
+                                    {
+                                        int indexOfInterface = Array.IndexOf(declTypeDefinitionRuntimeInterfaces, providingInterfaceDefinitionType);
+                                        Debug.Assert(indexOfInterface >= 0);
+                                        genericContext = StaticVirtualMethodContextSource.ContextFromFirstInterface + indexOfInterface;
+                                    }
+                                }
+                                staticDefaultImplementations.Add((
+                                    interfaceIndex,
+                                    emittedInterfaceSlot,
+                                    implSlot.Value,
+                                    genericContext));
+                            }
+                            else
+                            {
+                                defaultImplementations.Add((
+                                    interfaceIndex,
+                                    emittedInterfaceSlot,
+                                    implSlot.Value));
+                            }
                         }
                     }
                 }
@@ -230,9 +296,29 @@ namespace ILCompiler.DependencyAnalysis
                 builder.EmitShort((short)checked((ushort)defaultImplementation.ImplMethodSlot));
             }
 
+            // Now emit the static implementations
+            foreach (var staticImplementation in staticImplementations)
+            {
+                builder.EmitShort((short)checked((ushort)staticImplementation.InterfaceIndex));
+                builder.EmitShort((short)checked((ushort)staticImplementation.InterfaceMethodSlot));
+                builder.EmitShort((short)checked((ushort)staticImplementation.ImplMethodSlot));
+                builder.EmitShort((short)checked((ushort)staticImplementation.Context));
+            }
+
+            // Now emit the static default implementations
+            foreach (var staticImplementation in staticDefaultImplementations)
+            {
+                builder.EmitShort((short)checked((ushort)staticImplementation.InterfaceIndex));
+                builder.EmitShort((short)checked((ushort)staticImplementation.InterfaceMethodSlot));
+                builder.EmitShort((short)checked((ushort)staticImplementation.ImplMethodSlot));
+                builder.EmitShort((short)checked((ushort)staticImplementation.Context));
+            }
+
             // Update the header
             builder.EmitShort(entryCountReservation, (short)checked((ushort)entryCount));
             builder.EmitShort(defaultEntryCountReservation, (short)checked((ushort)defaultImplementations.Count));
+            builder.EmitShort(staticEntryCountReservation, (short)checked((ushort)staticImplementations.Count));
+            builder.EmitShort(defaultStaticEntryCountReservation, (short)checked((ushort)staticDefaultImplementations.Count));
         }
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)

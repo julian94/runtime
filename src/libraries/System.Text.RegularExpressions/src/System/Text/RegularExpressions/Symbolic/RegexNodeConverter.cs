@@ -61,11 +61,11 @@ namespace System.Text.RegularExpressions.Symbolic
                         // Singletons and multis
 
                         case RegexNodeKind.One:
-                            result.AddLast(_builder.CreateSingleton(_builder._solver.CreateFromChar(node.Ch)));
+                            result.AddLast(_builder.CreateSingleton(_builder._charSetSolver.CreateBDDFromChar(node.Ch)));
                             break;
 
                         case RegexNodeKind.Notone:
-                            result.AddLast(_builder.CreateSingleton(_builder._solver.Not(_builder._solver.CreateFromChar(node.Ch))));
+                            result.AddLast(_builder.CreateSingleton(_builder._solver.Not(_builder._charSetSolver.CreateBDDFromChar(node.Ch))));
                             break;
 
                         case RegexNodeKind.Set:
@@ -79,7 +79,7 @@ namespace System.Text.RegularExpressions.Symbolic
                                 Debug.Assert(str is not null);
                                 foreach (char c in str)
                                 {
-                                    result.AddLast(_builder.CreateSingleton(_builder._solver.CreateFromChar(c)));
+                                    result.AddLast(_builder.CreateSingleton(_builder._charSetSolver.CreateBDDFromChar(c)));
                                 }
                                 break;
                             }
@@ -115,7 +115,7 @@ namespace System.Text.RegularExpressions.Symbolic
                         case RegexNodeKind.Notonelazy:
                             {
                                 // Create a BDD that represents the character, then create a loop around it.
-                                BDD bdd = _builder._solver.CreateFromChar(node.Ch);
+                                BDD bdd = _builder._charSetSolver.CreateBDDFromChar(node.Ch);
                                 if (node.IsNotoneFamily)
                                 {
                                     bdd = _builder._solver.Not(bdd);
@@ -239,13 +239,13 @@ namespace System.Text.RegularExpressions.Symbolic
                                     // If childResult is a non-singleton list, then it denotes a concatenation that must be constructed at this point.
                                     SymbolicRegexNode<BDD> elem = childResult.Count == 1 ?
                                         childResult.FirstElement :
-                                        _builder.CreateConcatAlreadyReversed(childResult.EnumerateLastToFirst());
-                                    if (elem.IsNothing)
+                                        _builder.CreateConcatAlreadyReversed(childResult);
+                                    if (elem.IsNothing(_builder._solver))
                                     {
                                         continue;
                                     }
 
-                                    or = elem.IsAnyStar ?
+                                    or = elem.IsAnyStar(_builder._solver) ?
                                         elem : // .* is the absorbing element
                                         SymbolicRegexNode<BDD>.CreateAlternate(_builder, elem, or);
                                 }
@@ -262,7 +262,7 @@ namespace System.Text.RegularExpressions.Symbolic
                                 // Convert a list of nodes into a concatenation
                                 SymbolicRegexNode<BDD> body = childResult.Count == 1 ?
                                     childResult.FirstElement :
-                                    _builder.CreateConcatAlreadyReversed(childResult.EnumerateLastToFirst());
+                                    _builder.CreateConcatAlreadyReversed(childResult);
                                 result.AddLast(_builder.CreateLoop(body, node.Kind == RegexNodeKind.Lazyloop, node.M, node.N));
                                 break;
                             }
@@ -292,14 +292,14 @@ namespace System.Text.RegularExpressions.Symbolic
 
             return rootResult.Count == 1 ?
                 rootResult.FirstElement :
-                _builder.CreateConcatAlreadyReversed(rootResult.EnumerateLastToFirst());
+                _builder.CreateConcatAlreadyReversed(rootResult);
 
             void EnsureNewlinePredicateInitialized()
             {
                 // Initialize the \n set in the builder if it has not been updated already
                 if (_builder._newLineSet.Equals(_builder._solver.Empty))
                 {
-                    _builder._newLineSet = _builder._solver.CreateFromChar('\n');
+                    _builder._newLineSet = _builder._charSetSolver.CreateBDDFromChar('\n');
                 }
             }
 
@@ -369,7 +369,7 @@ namespace System.Text.RegularExpressions.Symbolic
                 {
                     foreach ((char first, char last) in ranges)
                     {
-                        BDD bdd = charSetSolver.CreateSetFromRange(first, last);
+                        BDD bdd = charSetSolver.CreateBDDFromRange(first, last);
                         if (negate)
                         {
                             bdd = charSetSolver.Not(bdd);
@@ -379,6 +379,11 @@ namespace System.Text.RegularExpressions.Symbolic
                 }
 
                 // Handle categories
+
+                const int UnicodeCategoryCount = 1 + (int)UnicodeCategory.OtherNotAssigned;
+                Debug.Assert(!Enum.IsDefined((UnicodeCategory)UnicodeCategoryCount));
+                Span<bool> categoryCodes = stackalloc bool[UnicodeCategoryCount];
+
                 int setLength = set[RegexCharClass.SetLengthIndex];
                 int catLength = set[RegexCharClass.CategoryLengthIndex];
                 int catStart = setLength + RegexCharClass.SetStartIndex;
@@ -418,11 +423,16 @@ namespace System.Text.RegularExpressions.Symbolic
                     // If the first catCode is negated, the group as a whole is negated
                     bool negatedGroup = categoryCode < 0;
 
-                    // Collect individual category codes
-                    var categoryCodes = new HashSet<UnicodeCategory>();
+                    // Collect individual category codes. At this point, the only codes that can be
+                    // here are valid UnicodeCategories; SpaceConst is never used as part of groups,
+                    // as such groups are only constructed in our own RegexCharClass consts, and it's
+                    // not used there.
+                    categoryCodes.Clear();
                     while (categoryCode != 0)
                     {
-                        categoryCodes.Add((UnicodeCategory)Math.Abs((int)categoryCode) - 1);
+                        int cat = Math.Abs((int)categoryCode) - 1;
+                        Debug.Assert(cat >= 0 && cat < categoryCodes.Length, $"Expected {cat} to be in range [0, {categoryCodes.Length}).");
+                        categoryCodes[cat] = true;
                         categoryCode = (short)set[i++];
                     }
 
@@ -470,42 +480,43 @@ namespace System.Text.RegularExpressions.Symbolic
                 return result;
 
                 // <summary>Creates a BDD that matches when a character is part of any of the specified UnicodeCategory values.</summary>
-                BDD MapCategoryCodeSetToCondition(HashSet<UnicodeCategory> catCodes)
+                BDD MapCategoryCodeSetToCondition(Span<bool> catCodes)
                 {
-                    Debug.Assert(catCodes.Count > 0);
-
                     // \w is so common, to help speed up construction we special-case it by using
                     // the combined \w set rather than an or (disjunction) of the component categories.
                     // This is done by validating that all of the categories for \w are there, and then removing
                     // them all if they are and instead starting our BDD off as \w.
                     BDD? result = null;
-                    if (catCodes.Contains(UnicodeCategory.UppercaseLetter) &&
-                        catCodes.Contains(UnicodeCategory.LowercaseLetter) &&
-                        catCodes.Contains(UnicodeCategory.TitlecaseLetter) &&
-                        catCodes.Contains(UnicodeCategory.ModifierLetter) &&
-                        catCodes.Contains(UnicodeCategory.OtherLetter) &&
-                        catCodes.Contains(UnicodeCategory.NonSpacingMark) &&
-                        catCodes.Contains(UnicodeCategory.DecimalDigitNumber) &&
-                        catCodes.Contains(UnicodeCategory.ConnectorPunctuation))
+                    if (catCodes[(int)UnicodeCategory.UppercaseLetter] &&
+                        catCodes[(int)UnicodeCategory.LowercaseLetter] &&
+                        catCodes[(int)UnicodeCategory.TitlecaseLetter] &&
+                        catCodes[(int)UnicodeCategory.ModifierLetter] &&
+                        catCodes[(int)UnicodeCategory.OtherLetter] &&
+                        catCodes[(int)UnicodeCategory.NonSpacingMark] &&
+                        catCodes[(int)UnicodeCategory.DecimalDigitNumber] &&
+                        catCodes[(int)UnicodeCategory.ConnectorPunctuation])
                     {
-                        catCodes.Remove(UnicodeCategory.UppercaseLetter);
-                        catCodes.Remove(UnicodeCategory.LowercaseLetter);
-                        catCodes.Remove(UnicodeCategory.TitlecaseLetter);
-                        catCodes.Remove(UnicodeCategory.ModifierLetter);
-                        catCodes.Remove(UnicodeCategory.OtherLetter);
-                        catCodes.Remove(UnicodeCategory.NonSpacingMark);
-                        catCodes.Remove(UnicodeCategory.DecimalDigitNumber);
-                        catCodes.Remove(UnicodeCategory.ConnectorPunctuation);
+                        catCodes[(int)UnicodeCategory.UppercaseLetter] =
+                        catCodes[(int)UnicodeCategory.LowercaseLetter] =
+                        catCodes[(int)UnicodeCategory.TitlecaseLetter] =
+                        catCodes[(int)UnicodeCategory.ModifierLetter] =
+                        catCodes[(int)UnicodeCategory.OtherLetter] =
+                        catCodes[(int)UnicodeCategory.NonSpacingMark] =
+                        catCodes[(int)UnicodeCategory.DecimalDigitNumber] =
+                        catCodes[(int)UnicodeCategory.ConnectorPunctuation] = false;
 
                         result = UnicodeCategoryConditions.WordLetter(charSetSolver);
                     }
 
                     // For any remaining categories, create a condition for each and
                     // or that into the resulting BDD.
-                    foreach (UnicodeCategory cat in catCodes)
+                    for (int i = 0; i < catCodes.Length; i++)
                     {
-                        BDD cond = MapCategoryCodeToCondition(cat);
-                        result = result is null ? cond : charSetSolver.Or(result, cond);
+                        if (catCodes[i])
+                        {
+                            BDD cond = MapCategoryCodeToCondition((UnicodeCategory)i);
+                            result = result is null ? cond : charSetSolver.Or(result, cond);
+                        }
                     }
 
                     Debug.Assert(result is not null);

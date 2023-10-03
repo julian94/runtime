@@ -11,6 +11,14 @@
 #ifndef __MONO_MONO_CONTEXT_H__
 #define __MONO_MONO_CONTEXT_H__
 
+/* 
+ * Handle non-gnu libc versions with nothing in features.h 
+ * We have no idea what they're compatible with, so always fail.
+ */
+#ifndef __GLIBC_PREREQ
+# define __GLIBC_PREREQ(x,y) 0
+#endif
+
 #include "mono-compiler.h"
 #include "mono-sigcontext.h"
 #include "mono-machine.h"
@@ -21,16 +29,30 @@
 
 #if defined(TARGET_X86)
 #if defined(__APPLE__)
-#define MONO_HAVE_SIMD_REG
+#if !defined(MONO_CROSS_COMPILE)
 typedef struct __darwin_xmm_reg MonoContextSimdReg;
+#else
+/* if building for an arm64 host machine, a cross compiler that produces x86 modules, fake a MonoContextSimdReg */
+typedef __uint128_t MonoContextSimdReg;
+#endif
 #endif
 #elif defined(TARGET_AMD64)
 #if defined(__APPLE__)
 #define MONO_HAVE_SIMD_REG
+#if !defined(MONO_CROSS_COMPILE)
 typedef struct __darwin_xmm_reg MonoContextSimdReg;
+#else
+/* if building for an arm64 host machine, a cross compiler that produces x64 modules, fake a MonoContextSimdReg */
+typedef __uint128_t MonoContextSimdReg;
+#endif
 #elif defined(__linux__) && defined(__GLIBC__)
 #define MONO_HAVE_SIMD_REG
+#if !defined(MONO_CROSS_COMPILE)
 typedef struct _libc_xmmreg MonoContextSimdReg;
+#else
+/* if building for an arm64 host machine, a cross compiler that produces x64 modules, fake a MonoContextSimdReg */
+typedef __uint128_t MonoContextSimdReg;
+#endif
 #elif defined(HOST_WIN32)
 #define MONO_HAVE_SIMD_REG
 //#define MONO_HAVE_SIMD_REG_AVX
@@ -41,8 +63,13 @@ typedef __m128d MonoContextSimdReg;
 typedef struct _libc_xmmreg MonoContextSimdReg;
 #elif defined(__linux__) || defined(__OpenBSD__)
 #define MONO_HAVE_SIMD_REG
+#if !defined(MONO_CROSS_COMPILE)
 #include <emmintrin.h>
 typedef __m128d MonoContextSimdReg;
+#else
+/* if building for an arm64 host machine, a cross compiler that produces x64 modules, fake a MonoContextSimdReg */
+typedef __uint128_t MonoContextSimdReg;
+#endif
 #endif
 #elif defined(TARGET_ARM64)
 /* We need a definition for MonoContextSimdReg even when cross-compiling
@@ -585,7 +612,7 @@ typedef struct {
 
 #define MONO_ARCH_HAS_MONO_CONTEXT 1
 
-#elif defined(__mono_ppc__) /* defined(__arm__) */
+#elif (defined (HOST_POWERPC) && !defined (MONO_CROSS_COMPILE)) || defined (TARGET_POWERPC) /* defined(__arm__) */
 
 /* we define our own structure and we'll copy the data
  * from sigcontext/ucontext/mach when we need it.
@@ -593,7 +620,7 @@ typedef struct {
  * We might also want to add an additional field to propagate
  * the original context from the signal handler.
  */
-#ifdef __mono_ppc64__
+#if (defined (HOST_POWERPC64) && !defined (MONO_CROSS_COMPILE)) || defined (TARGET_POWERPC64)
 
 typedef struct {
 	gulong sc_ir;          // pc
@@ -683,7 +710,7 @@ typedef struct {
 		: "memory"			\
 	)
 
-#else /* !defined(__mono_ppc64__) */
+#else /* !defined(HOST_POWERPC64) */
 
 typedef struct {
 	host_mgreg_t sc_ir;          // pc

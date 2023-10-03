@@ -86,7 +86,6 @@ namespace System.Reflection.Tests
         [InlineData("", typeof(ArgumentException))]
         [InlineData("\0", typeof(ArgumentException))]
         [InlineData("\0a", typeof(ArgumentException))]
-        [InlineData("/a", typeof(FileLoadException))]
         [InlineData("           ", typeof(FileLoadException))]
         [InlineData("  \t \r \n ", typeof(FileLoadException))]
         [InlineData("aa, culture=en-en, culture=en-en", typeof(FileLoadException))]
@@ -103,6 +102,8 @@ namespace System.Reflection.Tests
         [InlineData("aaaa, custom=10", "aaaa")]
         [InlineData("aaaa, custom=10, custom=20", "aaaa")]
         [InlineData("aaaa, custom=lalala", "aaaa")]
+        [InlineData("/a", "/a")]
+        [InlineData("aa/name ", "aa/name")]
         public void Ctor_String_Valid_Legacy(string name, string expectedName)
         {
             AssemblyName assemblyName = new AssemblyName(name);
@@ -111,7 +112,6 @@ namespace System.Reflection.Tests
 
         [Theory]
         [InlineData("name\\u50; ", typeof(FileLoadException))]
-        [InlineData("aa/name ", typeof(FileLoadException))]
         [InlineData("aa\\/tname", typeof(FileLoadException))]
         [InlineData("aaaa, publickey=neutral", typeof(FileLoadException))]
         [InlineData("aaaa, publickeytoken=neutral", typeof(FileLoadException))]
@@ -235,7 +235,7 @@ namespace System.Reflection.Tests
             AssemblyName an = new AssemblyName("MyAssemblyName");
             Assert.Null(an.CultureName);
         }
-
+#pragma warning disable SYSLIB0044 // AssemblyName.CodeBase .AssemblyName.EscapedCodeBase are obsolete
         [Fact]
         public void Verify_CodeBase()
         {
@@ -259,6 +259,7 @@ namespace System.Reflection.Tests
             n.CodeBase = @"file:///c:/program files/MyAssemblyName.dll";
             Assert.Equal(n.EscapedCodeBase, Uri.EscapeUriString(n.CodeBase));
         }
+#pragma warning restore SYSLIB0044
 
         [Fact]
         public static void Verify_HashAlgorithm()
@@ -294,24 +295,11 @@ namespace System.Reflection.Tests
         [Fact]
         public static void GetAssemblyName()
         {
-            AssertExtensions.Throws<ArgumentNullException>("assemblyFile", () => AssemblyName.GetAssemblyName(null));
-            AssertExtensions.Throws<ArgumentException>("path", null, () => AssemblyName.GetAssemblyName(string.Empty));
-            Assert.Throws<System.IO.FileNotFoundException>(() => AssemblyName.GetAssemblyName("IDontExist"));
-
-            using (var tempFile = new TempFile(Path.GetTempFileName(), 0)) // Zero-size file
+            Assembly a = typeof(AssemblyNameTests).Assembly;
+            string assemblyLocation = AssemblyPathHelper.GetAssemblyLocation(a);
+            if (!string.IsNullOrEmpty(assemblyLocation))
             {
-                Assert.Throws<System.BadImageFormatException>(() => AssemblyName.GetAssemblyName(tempFile.Path));
-            }
-
-            using (var tempFile = new TempFile(Path.GetTempFileName(), 42))
-            {
-                Assert.Throws<System.BadImageFormatException>(() => AssemblyName.GetAssemblyName(tempFile.Path));
-            }
-
-            if (!PlatformDetection.IsNativeAot)
-            {
-                Assembly a = typeof(AssemblyNameTests).Assembly;
-                Assert.Equal(new AssemblyName(a.FullName).ToString(), AssemblyName.GetAssemblyName(AssemblyPathHelper.GetAssemblyLocation(a)).ToString());
+                Assert.Equal(new AssemblyName(a.FullName).ToString(), AssemblyName.GetAssemblyName(assemblyLocation).ToString());
             }
         }
 

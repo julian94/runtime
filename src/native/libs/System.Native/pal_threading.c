@@ -48,7 +48,7 @@ static void SetIsLocked(LowLevelMonitor* monitor, bool isLocked)
 #endif
 }
 
-LowLevelMonitor* SystemNative_LowLevelMonitor_Create()
+LowLevelMonitor* SystemNative_LowLevelMonitor_Create(void)
 {
     LowLevelMonitor* monitor = (LowLevelMonitor *)malloc(sizeof(LowLevelMonitor));
     if (monitor == NULL)
@@ -233,14 +233,6 @@ int32_t SystemNative_CreateThread(uintptr_t stackSize, void *(*startAddress)(voi
     error = pthread_attr_setdetachstate(&attrs, PTHREAD_CREATE_DETACHED);
     assert(error == 0);
 
-#ifdef ENSURE_PRIMARY_STACK_SIZE
-    // TODO: https://github.com/dotnet/runtimelab/issues/791
-    if (stackSize == 0)
-    {
-        stackSize = 1536 * 1024;
-    }
-#endif
-
     if (stackSize > 0)
     {
         if (stackSize < (uintptr_t)PTHREAD_STACK_MIN)
@@ -265,7 +257,7 @@ CreateThreadExit:
     return result;
 }
 
-int32_t SystemNative_SchedGetCpu()
+int32_t SystemNative_SchedGetCpu(void)
 {
 #if HAVE_SCHED_GETCPU
     return sched_getcpu();
@@ -281,7 +273,7 @@ void SystemNative_Exit(int32_t exitCode)
 }
 
 __attribute__((noreturn))
-void SystemNative_Abort()
+void SystemNative_Abort(void)
 {
     abort();
 }

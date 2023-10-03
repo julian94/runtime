@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.ComponentModel;
 using System.Configuration.Assemblies;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Serialization;
@@ -82,6 +83,7 @@ namespace System.Reflection
             set => _cultureInfo = (value == null) ? null : new CultureInfo(value);
         }
 
+        [Obsolete(Obsoletions.AssemblyNameCodeBaseMessage, DiagnosticId = Obsoletions.AssemblyNameCodeBaseDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
         public string? CodeBase
         {
             [RequiresAssemblyFiles("The code will return an empty string for assemblies embedded in a single-file app")]
@@ -89,6 +91,7 @@ namespace System.Reflection
             set => _codeBase = value;
         }
 
+        [Obsolete(Obsoletions.AssemblyNameCodeBaseMessage, DiagnosticId = Obsoletions.AssemblyNameCodeBaseDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
         [RequiresAssemblyFiles("The code will return an empty string for assemblies embedded in a single-file app")]
         public string? EscapedCodeBase
         {
@@ -276,6 +279,8 @@ namespace System.Reflection
                 return s;
         }
 
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             throw new PlatformNotSupportedException();
@@ -293,7 +298,7 @@ namespace System.Reflection
         /// </summary>
         public static bool ReferenceMatchesDefinition(AssemblyName? reference, AssemblyName? definition)
         {
-            if (object.ReferenceEquals(reference, definition))
+            if (ReferenceEquals(reference, definition))
                 return true;
             ArgumentNullException.ThrowIfNull(reference);
             ArgumentNullException.ThrowIfNull(definition);

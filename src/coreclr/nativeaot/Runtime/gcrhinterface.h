@@ -112,6 +112,7 @@ public:
     static void WaitForGCCompletion();
 
     static void EnumGcRef(PTR_RtuObjectRef pRef, GCRefKind kind, void * pfnEnumCallback, void * pvCallbackData);
+    static void EnumGcRefConservatively(PTR_RtuObjectRef pRef, void* pfnEnumCallback, void* pvCallbackData);
 
     static void BulkEnumGcObjRef(PTR_RtuObjectRef pRefs, uint32_t cRefs, void * pfnEnumCallback, void * pvCallbackData);
 
@@ -120,7 +121,8 @@ public:
                            PTR_VOID safePointAddress,
                            REGDISPLAY * pRegisterSet,
                            void * pfnEnumCallback,
-                           void * pvCallbackData);
+                           void * pvCallbackData,
+                           bool   isActiveStackFrame);
 
     static void EnumGcRefsInRegionConservatively(PTR_RtuObjectRef pLowerBound,
                                                  PTR_RtuObjectRef pUpperBound,
@@ -139,7 +141,6 @@ public:
     static void ScanObject(void *pObject, GcScanObjectFunction pfnScanCallback, void *pContext);
     static void ScanStackRoots(Thread *pThread, GcScanRootFunction pfnScanCallback, void *pContext);
     static void ScanStaticRoots(GcScanRootFunction pfnScanCallback, void *pContext);
-    static void ScanHandleTableRoots(GcScanRootFunction pfnScanCallback, void *pContext);
 
     // Returns size GCDesc. Used by type cloning.
     static uint32_t GetGCDescSize(void * pType);

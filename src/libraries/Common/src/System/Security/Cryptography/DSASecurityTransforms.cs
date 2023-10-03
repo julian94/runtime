@@ -120,7 +120,7 @@ namespace System.Security.Cryptography
                     throw new CryptographicException(SR.Cryptography_UnknownHashAlgorithm, hashAlgorithm.Name);
                 }
 
-                return HashOneShotHelpers.HashData(hashAlgorithm, new ReadOnlySpan<byte>(data, offset, count));
+                return CryptographicOperations.HashData(hashAlgorithm, new ReadOnlySpan<byte>(data, offset, count));
             }
 
             protected override void Dispose(bool disposing)
@@ -146,10 +146,7 @@ namespace System.Security.Cryptography
                 // if a failed attempt to generate a key happened, or we're in a pristine state.
                 //
                 // So this type uses an explicit field, rather than inferred state.
-                if (_disposed)
-                {
-                    throw new ObjectDisposedException(nameof(DSA));
-                }
+                ObjectDisposedException.ThrowIf(_disposed, this);
             }
 
             internal SecKeyPair GetKeys()
@@ -163,7 +160,7 @@ namespace System.Security.Cryptography
                     return current;
                 }
 
-                // macOS 10.11 and macOS 10.12 declare DSA invalid for key generation.
+                // macOS declares DSA invalid for key generation.
                 // Rather than write code which might or might not work, returning
                 // (OSStatus)-4 (errSecUnimplemented), just make the exception occur here.
                 //
